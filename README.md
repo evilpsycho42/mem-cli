@@ -72,6 +72,36 @@ Notes:
 - If embeddings fail to load, mem-cli prints an error and falls back to keyword-only search.
 - On macOS, if GPU/Metal causes issues: `export NODE_LLAMA_CPP_GPU=off`
 
+## E2E performance (agent scenarios)
+
+Run:
+
+```bash
+MEM_CLI_MODEL=/absolute/path/to/your-embedding-model.gguf bash scripts/e2e-performance.sh
+```
+
+Latest recorded scores (v0.1.2, 2026-01-28, Qwen3-Embedding-0.6B-Q8_0.gguf):
+
+| Metric | Value |
+| --- | --- |
+| Overall score | 0.915 |
+| Avg query latency | 20ms |
+| P95 query latency | 25ms |
+
+| Dataset | Scenario | Docs | Queries | R@1 | R@5 | R@10 | MRR@10 | Score |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| stackoverflow | coding | 25 | 25 | 80.0% | 100.0% | 100.0% | 0.880 | 0.940 |
+| askubuntu | automation_tasks | 25 | 25 | 96.0% | 100.0% | 100.0% | 0.973 | 0.987 |
+| ux | design_tasks | 25 | 25 | 84.0% | 92.0% | 100.0% | 0.885 | 0.942 |
+| money | finance_investment | 25 | 25 | 80.0% | 96.0% | 100.0% | 0.869 | 0.935 |
+| pm | personal_work_management | 25 | 25 | 72.0% | 100.0% | 100.0% | 0.833 | 0.917 |
+| meta.stackoverflow | community_management | 25 | 25 | 80.0% | 96.0% | 100.0% | 0.875 | 0.938 |
+| movielens | user_preference | 200 | 30 | 33.3% | 83.3% | 100.0% | 0.554 | 0.777 |
+
+Notes:
+- The benchmark is cached + size-limited to run locally; timings depend on hardware.
+- See `docs/performance-datasets.md` and `docs/performance_records.md` for dataset definitions + history.
+
 ## Configuration
 
 All configuration lives in one place:
