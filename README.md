@@ -2,6 +2,12 @@
 
 A portable CLI-based memory tool for agents. Stores memory as Markdown plus a local SQLite index.
 
+## Install
+
+```bash
+npm i -g @kky42/mem-cli
+```
+
 ## Quickstart
 
 ```bash

@@ -1,11 +1,11 @@
 {
-  "name": "mem-cli",
+  "name": "@kky42/mem-cli",
   "version": "0.1.0",
   "description": "Agent memory CLI using markdown + SQLite FTS5",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-org/mem-cli.git"
+    "url": "git+https://github.com/evilpsycho42/mem-cli.git"
   },
   "keywords": [
     "cli",
@@ -24,6 +24,9 @@
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=18"
   },
