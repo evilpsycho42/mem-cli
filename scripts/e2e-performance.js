@@ -519,6 +519,11 @@ async function main() {
   const textWeight = readFloat("MEM_CLI_E2E_PERF_TEXT_WEIGHT", 0.3);
   const candidateMultiplier = readFloat("MEM_CLI_E2E_PERF_CANDIDATE_MULTIPLIER", 4);
 
+  const chunkTokens = readInt("MEM_CLI_E2E_PERF_CHUNK_TOKENS", 400);
+  const chunkOverlap = readInt("MEM_CLI_E2E_PERF_CHUNK_OVERLAP", 80);
+  const chunkMinChars = readInt("MEM_CLI_E2E_PERF_CHUNK_MIN_CHARS", 32);
+  const chunkCharsPerToken = readInt("MEM_CLI_E2E_PERF_CHUNK_CHARS_PER_TOKEN", 4);
+
   assert.ok(modelPath.trim(), "MEM_CLI_MODEL is required (set MEM_CLI_MODEL or run via scripts/e2e-performance.sh)");
 
   const prevHome = process.env.HOME;
@@ -535,7 +540,12 @@ async function main() {
       JSON.stringify(
         {
           version: 2,
-          chunking: { tokens: 400, overlap: 80, minChars: 32, charsPerToken: 4 },
+          chunking: {
+            tokens: chunkTokens,
+            overlap: chunkOverlap,
+            minChars: chunkMinChars,
+            charsPerToken: chunkCharsPerToken
+          },
           embeddings: {
             modelPath,
             cacheDir: modelCacheDir,
@@ -761,6 +771,22 @@ async function main() {
       generatedAt: new Date().toISOString(),
       model: modelPath,
       seed,
+      config: {
+        stackN,
+        stackCacheN,
+        movielensDocs,
+        movielensQueries,
+        limit,
+        vectorWeight,
+        textWeight,
+        candidateMultiplier,
+        chunking: {
+          tokens: chunkTokens,
+          overlap: chunkOverlap,
+          minChars: chunkMinChars,
+          charsPerToken: chunkCharsPerToken
+        }
+      },
       overall: {
         score: overallScore,
         avgQueryMs: overallAvgQueryMs,
@@ -772,7 +798,7 @@ async function main() {
       datasets: results
     };
 
-    const outPath = path.join(cacheDir, "last-run.json");
+    const outPath = process.env.MEM_CLI_E2E_PERF_OUT_JSON || path.join(cacheDir, "last-run.json");
     writeFile(outPath, JSON.stringify(jsonOut, null, 2) + "\n");
     console.log(`json: ${outPath}`);
   } finally {
