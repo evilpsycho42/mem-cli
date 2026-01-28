@@ -49,3 +49,31 @@ Score definition: `score = (R@10 + MRR@10) / 2` averaged across all queries.
 - For agent workflows, we prioritize **less irrelevant context + less prompt bloat** over a small score gain, so `v0.1.4` switches back to `chunkTokens=400` (with overlap `80`).
 - We keep a small keyword weight (`0.9/0.1`) as a guardrail for exact-string searches (ids, codes, filenames).
 - Candidate multiplier (`4 → 2`) did not change scores here; it slightly improved latency.
+
+## Chunk size guidance (web)
+
+There is no single “correct” chunk size, but common guidance converges on:
+
+- **Start ~200–400 tokens** and adjust based on your data + query patterns.
+  - Example: DataCamp notes 200–400 tokens as a common default range in popular tooling. (https://www.datacamp.com/tutorial/chunking-strategies-for-rag)
+- **Use overlap ~10–25%** of the chunk size to preserve boundary context.
+  - Example: Weaviate suggests overlap in the 10–20% range as a rule of thumb. (https://weaviate.io/blog/chunking-strategies-for-rag)
+  - Example: Microsoft suggests starting at 512 tokens with ~25% overlap, then tuning. (https://learn.microsoft.com/en-us/azure/search/vector-search-how-to-chunk-documents)
+- **Bigger chunks can improve recall but increase irrelevant context** (and can bloat agent prompts); smaller chunks can improve precision but increase chunk count + indexing work.
+  - Example: LlamaIndex discusses this tradeoff (its defaults are larger than ours because it’s a general-purpose RAG framework). (https://docs.llamaindex.ai/en/stable/optimizing/basic_strategies/basic_strategies/)
+
+Given our agent workflow constraints (low irrelevant context + limited prompt budget), we keep defaults at `chunkTokens=400` and `chunkOverlap=80` (20%), and rely on the perf suite to validate any future changes.
+
+## Public benchmarks vs our score
+
+Our `scripts/e2e-performance.sh` “score” is **not comparable** to public embedding leaderboards:
+
+- Our score is `((R@10 + MRR@10) / 2)` on a small, size-limited **agent scenario** benchmark (Stack Exchange + MovieLens).
+- Public embedding benchmarks (e.g. **MTEB**) report scores across many datasets and task types on a **different scale**.
+
+If you want a public reference point for the *embedding model itself* (not mem-cli’s chunking/search/indexing pipeline), see:
+
+- Qwen3 embedding blog: https://qwenlm.github.io/blog/qwen3-embedding/
+- Hugging Face model card for Qwen3-Embedding-0.6B (includes MTEB tables): https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
+
+We treat MTEB as a “model quality” signal, and treat `e2e-performance` as a **regression/perf harness** for mem-cli defaults.
