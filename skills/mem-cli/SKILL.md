@@ -12,7 +12,7 @@ description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdo
    - Private (token-protected): `mem init --token "<token>"`
 
 2. Add memories:
-   - Daily log entry (timestamped `## HH:MM`): `mem add short "..." --public|--token "<token>"`
+   - Daily log entry (appends raw Markdown text): `mem add short "..." --public|--token "<token>"`
    - Long-term memory (`MEMORY.md`): `mem add long --stdin --public|--token "<token>"`
 
 3. Search (always hybrid):
@@ -21,12 +21,12 @@ description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdo
 ## Storage model (what gets indexed)
 
 - Long-term memory: `MEMORY.md` at the workspace root.
-- Daily logs: `memory/YYYY-MM-DD.md` (each entry is a `## ...` section, e.g. `## 14:38`).
+- Daily logs: `memory/YYYY-MM-DD.md` (plain Markdown; no required structure).
 - Index DB: `index.db` in each workspace.
 
 Chunking rule:
-- Each Markdown `## ...` section becomes a searchable chunk (preamble before the first `##` is skipped).
-- If a single `##` section is too large, it is sub-chunked using the configured overlap.
+- Moltbot-style size-based chunking: accumulate lines until `chunking.tokens * chunking.charsPerToken` chars, then flush.
+- `chunking.overlap` keeps tail context across chunks (line-based carry).
 
 ## Global configuration
 
@@ -54,6 +54,7 @@ Where:
 ## Debugging and troubleshooting
 
 - Check workspace + config path: `mem state --public` or `mem state --token "<token>"`
-- If results look “too broad”: ensure your memories use `##` sections (chunking is `##`-based).
+- If results look “too broad”: lower `chunking.tokens` or increase `chunking.overlap` in `~/.mem-cli/settings.json`, then run `mem reindex`.
 - If embeddings/model changed: run `mem reindex` (or any command will reindex when it detects a model mismatch).
+- If embeddings fail to load (missing `node-llama-cpp` / invalid model path), mem-cli prints an error and falls back to keyword-only indexing/search.
 - If vector search is unavailable, hybrid may fall back to slower in-process cosine similarity; verify `sqlite-vec` loads on your platform and the embedding model is accessible.

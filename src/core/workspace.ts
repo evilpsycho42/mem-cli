@@ -193,7 +193,7 @@ export function initPublicWorkspace(): string {
 
   const memoryPath = path.join(workspacePath, LONG_MEMORY_FILENAME_PRIMARY);
   if (!fs.existsSync(memoryPath)) {
-    fs.writeFileSync(memoryPath, "# Long-term Memory\n");
+    fs.writeFileSync(memoryPath, "");
   }
 
   writeMeta(workspacePath, {
@@ -227,7 +227,7 @@ export function initPrivateWorkspace(token: string, customPath?: string): string
 
   const memoryPath = path.join(workspacePath, LONG_MEMORY_FILENAME_PRIMARY);
   if (!fs.existsSync(memoryPath)) {
-    fs.writeFileSync(memoryPath, "# Long-term Memory\n");
+    fs.writeFileSync(memoryPath, "");
   }
 
   writeMeta(workspacePath, {

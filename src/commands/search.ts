@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { resolveWorkspacePath, assertWorkspaceAccess } from "../core/workspace";
 import { openDb, ensureIndexUpToDate } from "../core/index";
 import { searchHybrid } from "../core/search";
-import { buildQueryInstruction, getEmbeddingProvider } from "../core/embeddings";
+import { buildQueryInstruction, tryGetEmbeddingProvider } from "../core/embeddings";
 import { ensureSettings, settingsFilePath } from "../core/settings";
 
 export function registerSearchCommand(program: Command): void {
@@ -72,12 +72,37 @@ export function registerSearchCommand(program: Command): void {
 
         const db = openDb(ref.path);
 
-        const provider = await getEmbeddingProvider(settings);
-        await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
+        const providerResult = await tryGetEmbeddingProvider(settings);
+        let provider = providerResult.provider;
+        if (!provider && providerResult.error) {
+          console.error("[mem-cli] embeddings unavailable; using keyword search only.");
+          console.error(providerResult.error);
+        }
+        try {
+          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
+        } catch (err) {
+          if (!provider) throw err;
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[mem-cli] embeddings failed during indexing; using keyword search only.");
+          console.error(message);
+          provider = null;
+          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: null });
+        }
 
-        const queryVec = await provider.embedQuery(
-          buildQueryInstruction(query, settings.embeddings.queryInstructionTemplate)
-        );
+        let queryVec: number[] = [];
+        if (provider) {
+          try {
+            queryVec = await provider.embedQuery(
+              buildQueryInstruction(query, settings.embeddings.queryInstructionTemplate)
+            );
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error("[mem-cli] embeddings failed for query; using keyword search only.");
+            console.error(message);
+            provider = null;
+            queryVec = [];
+          }
+        }
         const results = await searchHybrid({
           db,
           query,
@@ -88,7 +113,7 @@ export function registerSearchCommand(program: Command): void {
           candidateMultiplier,
           maxCandidates,
           snippetMaxChars,
-          model: provider.modelPath
+          model: provider?.modelPath
         });
 
         db.close();

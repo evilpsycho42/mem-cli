@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import fs from "fs";
+import path from "path";
 import { registerInitCommand } from "./commands/init";
 import { registerAddCommand } from "./commands/add";
 import { registerSearchCommand } from "./commands/search";
@@ -8,9 +10,20 @@ import { registerStateCommand } from "./commands/state";
 import { registerReindexCommand } from "./commands/reindex";
 import { registerDestroyCommand } from "./commands/destroy";
 
+function readPackageVersion(): string {
+  try {
+    const pkgPath = path.join(__dirname, "..", "package.json");
+    const raw = fs.readFileSync(pkgPath, "utf8");
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "string" && parsed.version.trim().length > 0 ? parsed.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 async function main() {
   const program = new Command();
-  program.name("mem").description("Agent memory CLI").version("0.1.0");
+  program.name("mem").description("Agent memory CLI").version(readPackageVersion());
 
   registerInitCommand(program);
   registerAddCommand(program);

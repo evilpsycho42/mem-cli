@@ -101,6 +101,17 @@ function buildQueryInstruction(query) {
   return require("../dist/core/embeddings.js").buildQueryInstruction(query);
 }
 
+function searchHybrid(params) {
+  // eslint-disable-next-line global-require
+  return require("../dist/core/search.js").searchHybrid(params);
+}
+
+function readJson(res) {
+  const raw = (res.stdout || "").trim();
+  assert.ok(raw, `expected JSON output, got empty stdout (stderr=${res.stderr})`);
+  return JSON.parse(raw);
+}
+
 test("workspace migration: legacy daily/ is moved to memory/", () => {
   const homeDir = mkdtemp("mem-cli-home-");
   const workspaceRoot = mkdtemp("mem-cli-workspace-");
@@ -128,10 +139,77 @@ test("workspace migration: legacy daily/ is moved to memory/", () => {
   assert.ok(!fs.existsSync(legacyDailyDir), "expected migration to remove daily/ dir");
 });
 
+test("cli: add short/long writes raw Markdown (no injected headers) and keyword search works without embeddings", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+
+    const initRes = runCli({ homeDir, args: ["init", "--public", "--json"] });
+    assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
+    const init = readJson(initRes);
+    const workspacePath = init.workspace;
+    assert.ok(workspacePath);
+
+    const addShortRes = runCli({ homeDir, args: ["add", "short", "hello world", "--public"] });
+    assert.equal(addShortRes.status, 0, addShortRes.stderr || addShortRes.stdout);
+
+    const memoryDir = path.join(workspacePath, "memory");
+    const dailyFiles = fs.readdirSync(memoryDir).filter((f) => f.endsWith(".md"));
+    assert.equal(dailyFiles.length, 1, "expected exactly one daily memory file");
+    const dailyPath = path.join(memoryDir, dailyFiles[0]);
+    const dailyContent = fs.readFileSync(dailyPath, "utf8");
+    assert.equal(dailyContent.trim(), "hello world");
+    assert.ok(!dailyContent.includes("## "), "expected no injected timestamp headings");
+    assert.ok(!dailyContent.match(/^#\s/m), "expected no injected date headings");
+
+    const addLongRes = runCli({ homeDir, args: ["add", "long", "alpha", "--public"] });
+    assert.equal(addLongRes.status, 0, addLongRes.stderr || addLongRes.stdout);
+    const addLong2Res = runCli({ homeDir, args: ["add", "long", "beta", "--public"] });
+    assert.equal(addLong2Res.status, 0, addLong2Res.stderr || addLong2Res.stdout);
+
+    const longPath = path.join(workspacePath, "MEMORY.md");
+    const longContent = fs.readFileSync(longPath, "utf8");
+    assert.equal(longContent, "alpha\n\nbeta\n");
+
+    const searchRes = runCli({ homeDir, args: ["search", "hello", "--public", "--json"] });
+    assert.equal(searchRes.status, 0, searchRes.stderr || searchRes.stdout);
+    const out = readJson(searchRes);
+    assert.ok(Array.isArray(out.results));
+    assert.ok(out.results.length > 0, "expected at least one search hit");
+    assert.ok(
+      out.results.some((r) => String(r.file_path || "").startsWith("memory/")),
+      "expected hit from daily memory file"
+    );
+  });
+});
+
+test("cli: CJK query returns no results when embeddings are unavailable (no FTS tokens)", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+
+    const initRes = runCli({ homeDir, args: ["init", "--public", "--json"] });
+    assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
+
+    const addRes = runCli({
+      homeDir,
+      args: ["add", "short", "系统可以根据网络情况动态调整视频码率。", "--public"]
+    });
+    assert.equal(addRes.status, 0, addRes.stderr || addRes.stdout);
+
+    const searchRes = runCli({
+      homeDir,
+      args: ["search", "这个系统是如何保证视频直播低延迟和播放质量的？", "--public", "--json"]
+    });
+    assert.equal(searchRes.status, 0, searchRes.stderr || searchRes.stdout);
+    const out = readJson(searchRes);
+    assert.ok(Array.isArray(out.results));
+    assert.equal(out.results.length, 0, "expected no results without embeddings for CJK-only query");
+  });
+});
+
 test("indexing only considers MEMORY.md + memory/**/*.md (not other .md files)", async () => {
   await withTempHome(async () => {
     const workspacePath = mkdtemp("mem-cli-ws-");
-    writeFile(path.join(workspacePath, "MEMORY.md"), "# Long-term Memory\n\nalpha\n");
+    writeFile(path.join(workspacePath, "MEMORY.md"), "alpha\n");
     writeFile(path.join(workspacePath, "memory", "2026-01-01.md"), "# 2026-01-01\n\nkiwi\n");
     writeFile(path.join(workspacePath, "notes.md"), "SHOULD_NOT_BE_INDEXED secret-phrase\n");
 
@@ -227,15 +305,46 @@ test("chunking: splits overly long lines into max-sized segments", async () => {
   });
 });
 
-test("vector search: daily sections do not leak unrelated entries", async () => {
+test("reindex: changing chunking.tokens does not break vec0 table rebuild", async () => {
+  await withTempHome(async (homeDir) => {
+    const workspacePath = mkdtemp("mem-cli-ws-");
+    const rel = "memory/2026-01-28.md";
+    writeFile(
+      path.join(workspacePath, rel),
+      ["# 2026-01-28", "", "## 09:00", "hello world"].join("\n")
+    );
+
+    const provider = {
+      modelPath: "/fake/reindex-model.gguf",
+      embedQuery: async () => [1, 0, 0],
+      embedBatch: async (texts) => texts.map(() => [1, 0, 0])
+    };
+
+    writeSettings(homeDir, { chunking: { tokens: 400, overlap: 80 } });
+    let db = openDb(workspacePath);
+    await reindexWorkspace(db, workspacePath, { embeddingProvider: provider });
+    db.close();
+
+    // Simulate a new CLI invocation after changing chunking settings.
+    writeSettings(homeDir, { chunking: { tokens: 300, overlap: 80 } });
+    db = openDb(workspacePath);
+    await ensureIndexUpToDate(db, workspacePath, { embeddingProvider: provider });
+
+    const queryVec = await provider.embedQuery(buildQueryInstruction("hello"));
+    const results = await searchVector(db, queryVec, 5, provider.modelPath);
+    assert.ok(results.length > 0, "expected vector results after reindex");
+    assert.equal(results[0].file_path, rel);
+    db.close();
+  });
+});
+
+test("chunking: does not split at headings (Moltbot-style size chunking)", async () => {
   await withTempHome(async () => {
     const workspacePath = mkdtemp("mem-cli-ws-");
     const rel = "memory/2026-01-28.md";
     writeFile(
       path.join(workspacePath, rel),
       [
-        "# 2026-01-28",
-        "",
         "## 09:00",
         "secret code: QQQ",
         "",
@@ -244,41 +353,13 @@ test("vector search: daily sections do not leak unrelated entries", async () => 
       ].join("\n")
     );
 
-    const embedText = (text) => {
-      const lower = String(text || "").toLowerCase();
-      const finance = (lower.match(/\bequit(?:y|ies)\b/g) || []).length +
-        (lower.match(/\bstocks?\b/g) || []).length +
-        (lower.match(/\bindex funds?\b/g) || []).length;
-      const secret = (lower.match(/\bsecret\b/g) || []).length +
-        (lower.match(/\bcode\b/g) || []).length +
-        (lower.match(/\bqqq\b/g) || []).length;
-      const words = (lower.match(/[a-z0-9_]+/g) || []).length;
-      const vec = [finance, secret, words];
-      const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
-      return norm > 0 ? vec.map((v) => v / norm) : vec;
-    };
-
-    const provider = {
-      modelPath: "/fake/leak-model.gguf",
-      embedQuery: async (text) => embedText(text),
-      embedBatch: async (texts) => texts.map((t) => embedText(t))
-    };
-
     const db = openDb(workspacePath);
-    await reindexWorkspace(db, workspacePath, { embeddingProvider: provider });
+    await reindexWorkspace(db, workspacePath, { embeddingProvider: null });
 
-    const queryVec = await provider.embedQuery(buildQueryInstruction("equity exposure"));
-    const results = await searchVector(db, queryVec, 5, provider.modelPath);
-    assert.ok(results.length > 0, "expected vector results");
-    assert.equal(results[0].file_path, rel, "expected match from the daily log");
-    assert.ok(
-      !String(results[0].snippet || "").toLowerCase().includes("secret code"),
-      "expected snippet to exclude unrelated secret entry"
-    );
-    assert.ok(
-      String(results[0].snippet || "").toLowerCase().includes("equity"),
-      "expected finance snippet"
-    );
+    const rows = db.prepare("SELECT content FROM chunks WHERE file_path = ?").all(rel);
+    assert.equal(rows.length, 1, "expected headings to be part of the same chunk when under maxChars");
+    assert.ok(String(rows[0].content).includes("secret code: QQQ"));
+    assert.ok(String(rows[0].content).toLowerCase().includes("equity"));
 
     db.close();
   });
@@ -343,7 +424,7 @@ test("incremental sync: deleted memory file is removed from index", async () => 
 test("performance: keyword search remains fast on larger workspaces", async () => {
   await withTempHome(async () => {
     const workspacePath = mkdtemp("mem-cli-ws-");
-    writeFile(path.join(workspacePath, "MEMORY.md"), "# Long-term Memory\n\nperf\n");
+    writeFile(path.join(workspacePath, "MEMORY.md"), "perf\n");
 
     for (let day = 1; day <= 60; day += 1) {
       const name = `2026-01-${String(day).padStart(2, "0")}.md`;
@@ -375,8 +456,6 @@ test("performance: semantic search finds stock memories with different wording",
     writeFile(
       path.join(workspacePath, "MEMORY.md"),
       [
-        "# Long-term Memory",
-        "",
         "## Investing",
         "- Prefer low-cost index funds for stock exposure.",
         "- Keep a diversified portfolio of stocks and bonds.",
@@ -458,6 +537,314 @@ test("performance: semantic search finds stock memories with different wording",
     }
     const elapsedMs = Date.now() - start;
     assert.ok(elapsedMs < 5000, `expected semantic search < 5000ms, got ${elapsedMs}ms`);
+
+    db.close();
+  });
+});
+
+test("retrieval quality score: multilingual video streaming (normal + hard cases + chunking)", async () => {
+  await withTempHome(async (homeDir) => {
+    const workspacePath = mkdtemp("mem-cli-ws-");
+    writeSettings(homeDir, { chunking: { tokens: 200, overlap: 40 } });
+
+    const longRelevantSentence =
+      "The platform offers real-time video streaming with low latency and high playback quality. " +
+      "Adaptive bitrate (ABR) and video transcoding improve playback quality under poor connections. " +
+      "Low-latency live streaming is critical for online events.";
+    const longFillerSentence =
+      "Unrelated note: the backend infrastructure must scale under heavy traffic; I bought a new keyboard.";
+    const longRelevantParagraph = [
+      longRelevantSentence,
+      longRelevantSentence,
+      longRelevantSentence,
+      longRelevantSentence,
+      longRelevantSentence,
+      longFillerSentence,
+      longRelevantSentence,
+      longRelevantSentence,
+      longRelevantSentence,
+      longFillerSentence
+    ].join("\n");
+
+    const docs = [
+      { id: "01", group: "A", lang: "zh", text: "这家公司提供高质量的视频转码和实时流媒体服务。" },
+      { id: "02", group: "A", lang: "zh", text: "我们正在优化视频播放的延迟和清晰度。" },
+      { id: "03", group: "A", lang: "zh", text: "该平台支持点播和直播两种视频场景。" },
+      { id: "04", group: "A", lang: "en", text: "The platform offers real-time video streaming with low latency." },
+      { id: "05", group: "A", lang: "en", text: "Video transcoding and adaptive bitrate are core features of this service." },
+      { id: "06", group: "A", lang: "en", text: "This product focuses on improving video playback quality." },
+      { id: "07", group: "B", lang: "zh", text: "系统可以根据网络情况动态调整视频码率。" },
+      { id: "08", group: "B", lang: "zh", text: "用户在弱网环境下也能流畅观看视频。" },
+      { id: "09", group: "B", lang: "en", text: "The system dynamically adjusts bitrate based on network conditions." },
+      { id: "10", group: "B", lang: "en", text: "Users can watch videos smoothly even on poor connections." },
+      { id: "11", group: "C", lang: "zh", text: "低延迟直播对于在线活动非常重要。" },
+      { id: "12", group: "C", lang: "en", text: "Low-latency live streaming is critical for online events." },
+      { id: "13", group: "D", lang: "zh", text: "后端服务需要处理高并发请求。" },
+      { id: "14", group: "D", lang: "en", text: "The backend infrastructure must scale under heavy traffic." },
+      // Hard positives: long paragraph should be chunked but remain retrievable.
+      { id: "19", group: "A", lang: "en", text: longRelevantParagraph },
+      // Hard negatives: share a few keywords but are semantically off.
+      {
+        id: "20",
+        group: "F",
+        lang: "en",
+        text: "We reduced keyboard latency for gaming and improved typing feel; video capture quality was unrelated."
+      },
+      {
+        id: "21",
+        group: "F",
+        lang: "en",
+        text: "This video editing workflow improves render quality for offline clips (not for delivery)."
+      },
+      // Edge case: empty file should produce no chunks and never rank.
+      { id: "22", group: "Z", lang: "en", text: "" },
+      { id: "15", group: "E", lang: "zh", text: "我今天中午吃了一碗牛肉面。" },
+      { id: "16", group: "E", lang: "zh", text: "上海的天气最近有点潮湿。" },
+      { id: "17", group: "E", lang: "en", text: "I bought a new keyboard for my laptop." },
+      { id: "18", group: "E", lang: "en", text: "The cat is sleeping on the sofa." }
+    ];
+
+    for (const doc of docs) {
+      writeFile(path.join(workspacePath, "memory", "corpus-video", `doc-${doc.id}.md`), doc.text + "\n");
+    }
+
+    const patterns = [
+      {
+        name: "streaming",
+        patterns: [
+          /流媒体/g,
+          /直播/g,
+          /点播/g,
+          /\bstreaming\b/gi,
+          /\breal-time\b/gi,
+          /\blive\b/gi,
+          /\bplayback\b/gi
+        ]
+      },
+      {
+        name: "video",
+        patterns: [
+          /视频/g,
+          /\bvideo(?:s)?\b/gi
+        ]
+      },
+      {
+        name: "transcoding",
+        patterns: [
+          /转码/g,
+          /\btranscod\w*\b/gi
+        ]
+      },
+      { name: "latency", patterns: [/延迟/g, /低延迟/g, /\blow[-\s]?latency\b/gi, /\blatency\b/gi] },
+      {
+        name: "quality",
+        patterns: [/清晰度/g, /播放质量/g, /高质量/g, /\bquality\b/gi, /\bplayback quality\b/gi]
+      },
+      {
+        name: "bitrate",
+        patterns: [
+          /码率/g,
+          /弱网/g,
+          /网络/g,
+          /\bbitrate\b/gi,
+          /\badaptive bitrate\b/gi,
+          /\bnetwork conditions\b/gi,
+          /\bpoor connections\b/gi,
+          /\bdynamically adjusts\b/gi
+        ]
+      },
+      {
+        name: "capture",
+        patterns: [/采集/g, /\bcapture\b/gi, /\brecord(?:ing|ed)?\b/gi, /\bwebcam\b/gi]
+      },
+      {
+        name: "editing",
+        patterns: [/编辑/g, /\bedit(?:ing|or|ors)?\b/gi, /\brender(?:ing)?\b/gi, /\boffline clips?\b/gi]
+      },
+      {
+        name: "gaming",
+        patterns: [/游戏/g, /\bgam(?:e|es|ing)\b/gi, /\btyping\b/gi]
+      },
+      {
+        name: "backend",
+        patterns: [/后端/g, /高并发/g, /\bbackend\b/gi, /\binfrastructure\b/gi, /\bheavy traffic\b/gi, /\bscale\b/gi]
+      },
+      {
+        name: "unrelated",
+        patterns: [/牛肉面/g, /天气/g, /上海/g, /\bkeyboard\b/gi, /\blaptop\b/gi, /\bcat\b/gi, /\bsofa\b/gi]
+      }
+    ];
+
+    const embedText = (text) => {
+      const raw = String(text || "");
+      const vec = patterns.map((group) => {
+        let count = 0;
+        for (const pattern of group.patterns) {
+          const matches = raw.match(pattern);
+          if (matches) count += matches.length;
+        }
+        return count;
+      });
+      const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
+      return norm > 0 ? vec.map((v) => v / norm) : vec;
+    };
+
+    const provider = {
+      modelPath: "/fake/multilingual-model.gguf",
+      embedQuery: async (text) => embedText(text),
+      embedBatch: async (texts) => texts.map((t) => embedText(t))
+    };
+
+    const db = openDb(workspacePath);
+    await reindexWorkspace(db, workspacePath, { embeddingProvider: provider });
+
+    const relevant = new Set(docs.filter((d) => ["A", "B", "C"].includes(d.group)).map((d) => d.id));
+    const negatives = new Set(docs.filter((d) => ["E", "F"].includes(d.group)).map((d) => d.id));
+    const emptyDocs = new Set(docs.filter((d) => d.group === "Z").map((d) => d.id));
+    const byPath = new Map(
+      docs.map((d) => [`memory/corpus-video/doc-${d.id}.md`, d])
+    );
+
+    const runSearch = async (query) => {
+      const queryVec = await provider.embedQuery(buildQueryInstruction(query));
+      return searchHybrid({
+        db,
+        query,
+        queryVec,
+        limit: 20,
+        vectorWeight: 0.7,
+        textWeight: 0.3,
+        candidateMultiplier: 4,
+        maxCandidates: 200,
+        snippetMaxChars: 700,
+        model: provider.modelPath
+      });
+    };
+
+    const topUniqueDocIds = (results, k) => {
+      const seen = new Set();
+      const out = [];
+      for (const row of results) {
+        const doc = byPath.get(row.file_path);
+        if (!doc) continue;
+        if (seen.has(doc.id)) continue;
+        seen.add(doc.id);
+        out.push(doc.id);
+        if (out.length >= k) break;
+      }
+      return out;
+    };
+
+    const englishQuery = "How does the system handle low-latency video streaming and playback quality?";
+    const chineseQuery = "这个系统是如何保证视频直播低延迟和播放质量的？";
+    const englishResults = await runSearch(englishQuery);
+    const chineseResults = await runSearch(chineseQuery);
+
+    const score = [];
+    const failures = [];
+
+    const check = async (name, fn) => {
+      try {
+        await fn();
+        score.push({ name, ok: true });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        score.push({ name, ok: false });
+        failures.push({ name, message });
+      }
+    };
+
+    const checkQuery = async (label, results, expectCrossLang) => {
+      const top8Unique = topUniqueDocIds(results, 8);
+      const top10RankedIds = results
+        .slice(0, 10)
+        .map((r) => byPath.get(r.file_path))
+        .filter(Boolean)
+        .map((d) => d.id);
+      const relevantHits = top8Unique.filter((id) => relevant.has(id)).length;
+      const negativeHits = top10RankedIds.filter((id) => negatives.has(id));
+      const hasCrossLang = top8Unique
+        .map((id) => byPath.get(`memory/corpus-video/doc-${id}.md`))
+        .filter(Boolean)
+        .some((doc) => doc.lang === expectCrossLang);
+
+      await check(`${label}: results non-empty`, () => {
+        assert.ok(results.length > 0, "expected results");
+      });
+      await check(`${label}: >=6 relevant in top 8`, () => {
+        assert.ok(
+          relevantHits >= 6,
+          `expected >=6 relevant in top 8, got ${relevantHits} (${top8Unique.join(",")})`
+        );
+      });
+      await check(`${label}: no obvious negatives in top 10`, () => {
+        assert.equal(
+          negativeHits.length,
+          0,
+          `expected no negatives in top 10, got ${negativeHits.join(",")}`
+        );
+      });
+      await check(`${label}: cross-language present`, () => {
+        assert.ok(hasCrossLang, `expected at least one ${expectCrossLang} doc in top 8`);
+      });
+    };
+
+    await checkQuery("EN query", englishResults, "zh");
+    await checkQuery("ZH query", chineseResults, "en");
+
+    await check("chunking: long paragraph doc is split into multiple chunks", () => {
+      const rel = "memory/corpus-video/doc-19.md";
+      const rows = db
+        .prepare("SELECT content FROM chunks WHERE file_path = ? ORDER BY rowid ASC")
+        .all(rel);
+      assert.ok(rows.length > 1, `expected doc-19 to be chunked into multiple chunks, got ${rows.length}`);
+    });
+
+    await check("chunking: overlap carries tail context across long paragraph chunks", () => {
+      const rel = "memory/corpus-video/doc-19.md";
+      const rows = db
+        .prepare("SELECT content FROM chunks WHERE file_path = ? ORDER BY rowid ASC LIMIT 2")
+        .all(rel);
+      assert.equal(rows.length, 2, "expected at least 2 chunks for doc-19");
+      const first = String(rows[0].content || "");
+      const second = String(rows[1].content || "");
+      const lastLine = first.trim().split("\n").slice(-1)[0] || "";
+      assert.ok(lastLine.length > 0, "expected non-empty tail line");
+      assert.ok(second.includes(lastLine), "expected overlap to include tail line from previous chunk");
+    });
+
+    await check("edge: empty doc yields no chunks", () => {
+      const rel = "memory/corpus-video/doc-22.md";
+      const rows = db.prepare("SELECT count(*) as c FROM chunks WHERE file_path = ?").get(rel);
+      assert.equal(rows.c, 0, "expected zero chunks for empty doc-22");
+    });
+
+    await check("edge: empty doc does not appear in top 20", () => {
+      const top = new Set(topUniqueDocIds(englishResults, 20));
+      for (const id of emptyDocs) {
+        assert.ok(!top.has(id), `did not expect empty doc-${id} in top 20`);
+      }
+    });
+
+    const passed = score.filter((s) => s.ok).length;
+    const total = score.length;
+    const pct = total > 0 ? passed / total : 1;
+    const pctStr = (pct * 100).toFixed(1);
+    const label =
+      pct === 1
+        ? "great"
+        : pct >= 0.95
+          ? "acceptable"
+          : pct >= 0.9
+            ? "something seems wrong"
+            : "broken";
+
+    console.log(`[quality-score] ${passed}/${total} (${pctStr}%) - ${label}`);
+    for (const f of failures) {
+      console.log(`[quality-miss] ${f.name}: ${f.message}`);
+    }
+
+    assert.ok(pct >= 0.9, `quality score below 90%: ${passed}/${total} (${pctStr}%)`);
 
     db.close();
   });

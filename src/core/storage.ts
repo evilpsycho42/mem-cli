@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { formatDateLocal, formatTimeLocal } from "../utils/date";
+import { formatDateLocal } from "../utils/date";
 import { MEMORY_DIRNAME, dailyDirPath, longMemoryCandidatePaths, resolveLongMemoryPath } from "./layout";
 
 export function ensureDir(dirPath: string): void {
@@ -11,26 +11,31 @@ export function ensureDir(dirPath: string): void {
 
 export function appendDailyEntry(workspacePath: string, text: string, date = new Date()): string {
   const day = formatDateLocal(date);
-  const time = formatTimeLocal(date);
   const dailyDir = dailyDirPath(workspacePath);
   ensureDir(dailyDir);
   const dailyPath = path.join(dailyDir, `${day}.md`);
 
   if (!fs.existsSync(dailyPath)) {
-    fs.writeFileSync(dailyPath, `# ${day}\n\n`);
+    fs.writeFileSync(dailyPath, "");
   }
 
-  const entry = `## ${time}\n${text.trim()}\n`;
-  fs.appendFileSync(dailyPath, `\n${entry}`);
+  const entry = text.trim();
+  if (entry.length === 0) return dailyPath;
+  const needsSeparator = fs.statSync(dailyPath).size > 0;
+  // We always end entries with a newline, so a single leading newline yields a blank line between entries.
+  fs.appendFileSync(dailyPath, `${needsSeparator ? "\n" : ""}${entry}\n`);
   return dailyPath;
 }
 
 export function appendLongMemory(workspacePath: string, text: string): string {
   const memoryPath = resolveLongMemoryPath(workspacePath);
   if (!fs.existsSync(memoryPath)) {
-    fs.writeFileSync(memoryPath, "# Long-term Memory\n");
+    fs.writeFileSync(memoryPath, "");
   }
-  fs.appendFileSync(memoryPath, `\n\n${text.trim()}\n`);
+  const entry = text.trim();
+  if (entry.length === 0) return memoryPath;
+  const needsSeparator = fs.statSync(memoryPath).size > 0;
+  fs.appendFileSync(memoryPath, `${needsSeparator ? "\n" : ""}${entry}\n`);
   return memoryPath;
 }
 

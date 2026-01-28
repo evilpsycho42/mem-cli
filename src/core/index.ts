@@ -9,7 +9,7 @@ import { loadSqliteVecExtension } from "./sqlite-vec";
 import { ensureSettings, type Settings } from "./settings";
 import { indexDbPath } from "./layout";
 
-const META_KEY = "mem_index_meta_v2";
+const META_KEY = "mem_index_meta_v3";
 const VECTOR_TABLE = "chunks_vec";
 const FTS_TABLE = "chunks_fts";
 const EMBEDDING_CACHE_TABLE = "embedding_cache";
@@ -25,6 +25,7 @@ type IndexMeta = {
 };
 
 let cachedVectorExtensionPath: string | undefined;
+let didPruneOrphanedVectors = false;
 
 type ChunkingConfig = { tokens: number; overlap: number; minChars: number; charsPerToken: number };
 
@@ -209,17 +210,12 @@ async function ensureVectorReady(
   if (dims <= 0) return false;
 
   const meta = readMeta(db);
+  const previousModel = meta.model;
   const previousDims = meta.dims;
-  if (meta.model && meta.model !== modelPath) {
-    if (hasTable(db, VECTOR_TABLE)) {
-      db.exec(`DROP TABLE IF EXISTS ${VECTOR_TABLE}`);
-    }
-    meta.dims = undefined;
-  }
 
   const loaded = await loadSqliteVecExtension({
     db,
-    extensionPath: cachedVectorExtensionPath
+    extensionPath: cachedVectorExtensionPath ?? meta.vectorExtensionPath
   });
   if (debug) {
     console.error("[mem-cli] sqlite-vec load", loaded);
@@ -241,7 +237,10 @@ async function ensureVectorReady(
     return false;
   }
 
-  if (previousDims && previousDims !== dims) {
+  const shouldDropExisting =
+    hasTable(db, VECTOR_TABLE) &&
+    ((previousModel && previousModel !== modelPath) || (previousDims && previousDims !== dims));
+  if (shouldDropExisting) {
     db.exec(`DROP TABLE IF EXISTS ${VECTOR_TABLE}`);
   }
 
@@ -348,66 +347,10 @@ function chunkLinesByChars(
   return chunks;
 }
 
-function isH2Heading(line: string): boolean {
-  return /^##\s+\S/.test(line);
-}
-
-function trimTrailingEmptyLines(lines: string[]): string[] {
-  let end = lines.length;
-  while (end > 0 && (lines[end - 1] ?? "").trim().length === 0) {
-    end -= 1;
-  }
-  return lines.slice(0, end);
-}
-
 function chunkMarkdown(content: string, chunking: ChunkingConfig): MemoryChunk[] {
   const lines = content.split("\n");
   if (lines.length === 0) return [];
-
-  const h2Starts: number[] = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? "";
-    if (isH2Heading(line)) h2Starts.push(i);
-  }
-
-  // No built-in sections: fall back to character-based chunking.
-  if (h2Starts.length === 0) {
-    return chunkLinesByChars(lines, chunking, 1);
-  }
-
-  // Section-based chunking: split at each H2 heading (e.g. `## 14:38`, `## Finance Notes`).
-  // This keeps unrelated entries from being returned together (important for privacy + relevance).
-  const chunks: MemoryChunk[] = [];
-  // We intentionally skip any preamble before the first H2 so headings act like "entry boundaries".
-  // (E.g. `# 2026-01-28` or `# Long-term Memory` is rarely useful for semantic recall and can
-  // create zero-vector chunks that pollute vector search.)
-  const boundaries = h2Starts.filter((v, idx, arr) => idx === 0 || v !== arr[idx - 1]);
-
-  for (let i = 0; i < boundaries.length; i += 1) {
-    const start = boundaries[i] ?? 0;
-    const next = boundaries[i + 1];
-    const rawEnd = typeof next === "number" ? next - 1 : lines.length - 1;
-    if (rawEnd < start) continue;
-
-    const sectionLines = trimTrailingEmptyLines(lines.slice(start, rawEnd + 1));
-    if (sectionLines.length === 0) continue;
-
-    const maxChars = Math.max(chunking.minChars, chunking.tokens * chunking.charsPerToken);
-    const sectionText = sectionLines.join("\n");
-    if (sectionText.length > maxChars) {
-      // Oversized section: apply overlap-based char chunking within the section only.
-      chunks.push(...chunkLinesByChars(sectionLines, chunking, start + 1));
-    } else {
-      chunks.push({
-        content: sectionText,
-        lineStart: start + 1,
-        lineEnd: start + sectionLines.length,
-        hash: sha256Hex(sectionText)
-      });
-    }
-  }
-
-  return chunks;
+  return chunkLinesByChars(lines, chunking, 1);
 }
 
 function buildChunkId(
@@ -691,6 +634,13 @@ export async function ensureIndexUpToDate(
     }
   }
 
+  if (vectorExtensionReady && !didPruneOrphanedVectors) {
+    try {
+      db.exec(`DELETE FROM ${VECTOR_TABLE} WHERE id NOT IN (SELECT id FROM chunks)`);
+    } catch {}
+    didPruneOrphanedVectors = true;
+  }
+
   const rows = db
     .prepare("SELECT path, hash, mtime, size FROM files")
     .all() as { path: string; hash: string; mtime: number; size: number }[];
@@ -779,9 +729,27 @@ export async function reindexWorkspace(
 
   db.prepare(`DELETE FROM ${FTS_TABLE}`).run();
   db.prepare("DELETE FROM chunks").run();
-  try {
-    db.exec(`DROP TABLE IF EXISTS ${VECTOR_TABLE}`);
-  } catch {}
+
+  if (hasTable(db, VECTOR_TABLE)) {
+    const loaded = await loadSqliteVecExtension({
+      db,
+      extensionPath: cachedVectorExtensionPath ?? meta.vectorExtensionPath
+    });
+    if (loaded.ok) {
+      cachedVectorExtensionPath = loaded.extensionPath;
+      try {
+        db.prepare("SELECT vec_version()").get();
+      } catch {}
+    }
+    try {
+      db.exec(`DROP TABLE IF EXISTS ${VECTOR_TABLE}`);
+    } catch (err) {
+      // If we can't load sqlite-vec in this process, dropping the vec0 table will fail.
+      // That's ok when embeddings are disabled (we won't write vectors), but it's fatal
+      // when embeddings are enabled because stale vectors can cause UNIQUE errors.
+      if (options?.embeddingProvider) throw err;
+    }
+  }
   db.prepare("DELETE FROM files").run();
 
   const filesOnDisk = listMemoryFiles(workspacePath);

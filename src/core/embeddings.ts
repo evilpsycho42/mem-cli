@@ -116,3 +116,15 @@ export async function getEmbeddingProvider(
   cachedProviders.set(cacheKey, providerPromise);
   return providerPromise;
 }
+
+export async function tryGetEmbeddingProvider(
+  settings: Settings
+): Promise<{ provider: EmbeddingProvider | null; error?: string }> {
+  try {
+    const provider = await getEmbeddingProvider(settings);
+    return { provider };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { provider: null, error: message };
+  }
+}
