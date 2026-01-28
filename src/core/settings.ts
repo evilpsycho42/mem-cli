@@ -43,7 +43,7 @@ export type Settings = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 2,
-  chunking: { tokens: 800, overlap: 160, minChars: 32, charsPerToken: 4 },
+  chunking: { tokens: 400, overlap: 80, minChars: 32, charsPerToken: 4 },
   embeddings: {
     modelPath: DEFAULT_EMBEDDING_MODEL,
     cacheDir: DEFAULT_EMBEDDING_CACHE_DIR,

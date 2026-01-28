@@ -519,8 +519,8 @@ async function main() {
   const textWeight = readFloat("MEM_CLI_E2E_PERF_TEXT_WEIGHT", 0.1);
   const candidateMultiplier = readFloat("MEM_CLI_E2E_PERF_CANDIDATE_MULTIPLIER", 2);
 
-  const chunkTokens = readInt("MEM_CLI_E2E_PERF_CHUNK_TOKENS", 800);
-  const chunkOverlap = readInt("MEM_CLI_E2E_PERF_CHUNK_OVERLAP", 160);
+  const chunkTokens = readInt("MEM_CLI_E2E_PERF_CHUNK_TOKENS", 400);
+  const chunkOverlap = readInt("MEM_CLI_E2E_PERF_CHUNK_OVERLAP", 80);
   const chunkMinChars = readInt("MEM_CLI_E2E_PERF_CHUNK_MIN_CHARS", 32);
   const chunkCharsPerToken = readInt("MEM_CLI_E2E_PERF_CHUNK_CHARS_PER_TOKEN", 4);
 

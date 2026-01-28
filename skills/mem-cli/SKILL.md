@@ -36,7 +36,7 @@ All workspaces share one settings file:
 Default settings (tuned for agent use):
 - Embeddings: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf` (downloaded + cached)
 - Search: `vectorWeight=0.9`, `textWeight=0.1`, `candidateMultiplier=2`
-- Chunking: `tokens=800`, `overlap=160` (size-based; approximate)
+- Chunking: `tokens=400`, `overlap=80` (size-based; approximate; chosen to reduce irrelevant context)
 
 Important fields:
 - `embeddings.modelPath`: Embedding model spec (local `.gguf` path or `hf:...`). Usually you can keep the default.
