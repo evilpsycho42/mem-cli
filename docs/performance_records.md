@@ -9,6 +9,53 @@ Why this exists:
 
 ---
 
+## v0.1.3 (2026-01-28)
+
+**Command**
+
+```bash
+MEM_CLI_MODEL=/Users/kky/Dev/mem-cli/models/Qwen3-Embedding-0.6B-Q8_0.gguf bash scripts/e2e-performance.sh
+```
+
+**Defaults under test**
+- Default embedding model: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`
+- Search: `vectorWeight=0.9`, `textWeight=0.1`, `candidateMultiplier=2`, `limit=10`
+- Chunking: `tokens=800`, `overlap=160`, `minChars=32`, `charsPerToken=4`
+- Seed: `42`
+
+**Dataset snapshot metadata**
+
+Stack Exchange caches (top-voted questions with accepted answers; docs = accepted answers; queries = question titles):
+- `stackoverflow` fetchedAt `2026-01-28T16:41:02.215Z` (cache items=30)
+- `askubuntu` fetchedAt `2026-01-28T16:41:07.063Z` (cache items=30)
+- `ux` fetchedAt `2026-01-28T16:41:10.136Z` (cache items=30)
+- `money` fetchedAt `2026-01-28T16:41:13.629Z` (cache items=30)
+- `pm` fetchedAt `2026-01-28T16:41:17.351Z` (cache items=30)
+- `meta.stackoverflow` fetchedAt `2026-01-28T16:41:21.511Z` (cache items=28)
+
+MovieLens:
+- Source: `https://files.grouplens.org/datasets/movielens/ml-latest-small.zip`
+- Cached zip SHA-256: `696d65a3dfceac7c45750ad32df2c259311949efec81f0f144fdfb91ebc9e436`
+
+**Results**
+
+Overall:
+- score: `0.923`
+- avg query: `20ms`
+- p95 query: `22ms`
+
+Per-dataset:
+
+| Dataset | Scenario | Docs | Queries | R@1 | R@5 | R@10 | MRR@10 | Score |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| stackoverflow | coding | 25 | 25 | 84.0% | 100.0% | 100.0% | 0.913 | 0.957 |
+| askubuntu | automation_tasks | 25 | 25 | 96.0% | 100.0% | 100.0% | 0.973 | 0.987 |
+| ux | design_tasks | 25 | 25 | 84.0% | 100.0% | 100.0% | 0.900 | 0.950 |
+| money | finance_investment | 25 | 25 | 80.0% | 92.0% | 96.0% | 0.859 | 0.910 |
+| pm | personal_work_management | 25 | 25 | 84.0% | 100.0% | 100.0% | 0.907 | 0.953 |
+| meta.stackoverflow | community_management | 25 | 25 | 88.0% | 100.0% | 100.0% | 0.918 | 0.959 |
+| movielens | user_preference | 200 | 30 | 33.3% | 83.3% | 100.0% | 0.554 | 0.777 |
+
 ## v0.1.2 (2026-01-28)
 
 **Command**

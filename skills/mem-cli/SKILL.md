@@ -1,6 +1,6 @@
 ---
 name: mem-cli
-description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdown + a local SQLite index. Use when Codex needs to initialize a public/private memory workspace, add daily/long-term memories, run hybrid semantic+keyword search, reindex after settings/model changes, or troubleshoot search/embedding behavior via the global config at `~/.mem-cli/settings.json`.
+description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdown + a local SQLite index. Use when Codex needs to initialize a public/private memory workspace, add daily/long-term memories, run hybrid semantic+keyword search (default Qwen3 embeddings), reindex after settings changes, or troubleshoot search/embedding behavior via the global config at `~/.mem-cli/settings.json`.
 ---
 
 # mem-cli (Agent Memory CLI)
@@ -33,8 +33,13 @@ Chunking rule:
 All workspaces share one settings file:
 - `~/.mem-cli/settings.json`
 
+Default settings (tuned for agent use):
+- Embeddings: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf` (downloaded + cached)
+- Search: `vectorWeight=0.9`, `textWeight=0.1`, `candidateMultiplier=2`
+- Chunking: `tokens=800`, `overlap=160` (size-based; approximate)
+
 Important fields:
-- `embeddings.modelPath`: Local `.gguf` path or remote spec (e.g. `hf:...`).
+- `embeddings.modelPath`: Embedding model spec (local `.gguf` path or `hf:...`). Usually you can keep the default.
 - `embeddings.cacheDir`: Where remote models are cached (this is NOT the embedding-cache for chunks).
 - `chunking.*`: Controls max chunk size + overlap.
 - `search.*`: Controls hybrid scoring weights and candidate limits.
@@ -58,3 +63,4 @@ Where:
 - If embeddings/model changed: run `mem reindex` (or any command will reindex when it detects a model mismatch).
 - If embeddings fail to load (missing `node-llama-cpp` / invalid model path), mem-cli prints an error and falls back to keyword-only indexing/search.
 - If vector search is unavailable, hybrid may fall back to slower in-process cosine similarity; verify `sqlite-vec` loads on your platform and the embedding model is accessible.
+- macOS: `node-llama-cpp` uses Metal by default (including integrated GPUs). If Metal causes issues, use `export NODE_LLAMA_CPP_GPU=off`.

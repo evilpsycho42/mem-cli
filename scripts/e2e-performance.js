@@ -515,12 +515,12 @@ async function main() {
   const seed = readInt("MEM_CLI_E2E_PERF_SEED", 42);
 
   const limit = readInt("MEM_CLI_E2E_PERF_LIMIT", 10);
-  const vectorWeight = readFloat("MEM_CLI_E2E_PERF_VECTOR_WEIGHT", 0.7);
-  const textWeight = readFloat("MEM_CLI_E2E_PERF_TEXT_WEIGHT", 0.3);
-  const candidateMultiplier = readFloat("MEM_CLI_E2E_PERF_CANDIDATE_MULTIPLIER", 4);
+  const vectorWeight = readFloat("MEM_CLI_E2E_PERF_VECTOR_WEIGHT", 0.9);
+  const textWeight = readFloat("MEM_CLI_E2E_PERF_TEXT_WEIGHT", 0.1);
+  const candidateMultiplier = readFloat("MEM_CLI_E2E_PERF_CANDIDATE_MULTIPLIER", 2);
 
-  const chunkTokens = readInt("MEM_CLI_E2E_PERF_CHUNK_TOKENS", 400);
-  const chunkOverlap = readInt("MEM_CLI_E2E_PERF_CHUNK_OVERLAP", 80);
+  const chunkTokens = readInt("MEM_CLI_E2E_PERF_CHUNK_TOKENS", 800);
+  const chunkOverlap = readInt("MEM_CLI_E2E_PERF_CHUNK_OVERLAP", 160);
   const chunkMinChars = readInt("MEM_CLI_E2E_PERF_CHUNK_MIN_CHARS", 32);
   const chunkCharsPerToken = readInt("MEM_CLI_E2E_PERF_CHUNK_CHARS_PER_TOKEN", 4);
 

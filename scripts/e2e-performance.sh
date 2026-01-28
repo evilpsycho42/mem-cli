@@ -14,7 +14,7 @@ if [[ -z "$MODEL_PATH" ]]; then
   if [[ -f "$ROOT/models/Qwen3-Embedding-0.6B-Q8_0.gguf" ]]; then
     MODEL_PATH="$ROOT/models/Qwen3-Embedding-0.6B-Q8_0.gguf"
   else
-    MODEL_PATH="hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf"
+    MODEL_PATH="hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf"
   fi
 fi
 
@@ -24,4 +24,3 @@ export MEM_CLI_E2E_PERF_CACHE_DIR="${MEM_CLI_E2E_PERF_CACHE_DIR:-$ROOT/.cache/e2
 mkdir -p "$MEM_CLI_E2E_PERF_CACHE_DIR"
 
 node "$ROOT/scripts/e2e-performance.js"
-

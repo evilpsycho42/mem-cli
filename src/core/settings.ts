@@ -4,7 +4,7 @@ import { APP_DIRNAME, PRIVATE_DIRNAME, PUBLIC_DIRNAME, SETTINGS_FILENAME } from 
 import { getRootDir, readRegistry } from "./registry";
 
 const DEFAULT_EMBEDDING_MODEL =
-  "hf:ggml-org/embeddinggemma-300M-GGUF/embeddinggemma-300M-Q8_0.gguf";
+  "hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf";
 const DEFAULT_EMBEDDING_CACHE_DIR = `~/${APP_DIRNAME}/model-cache`;
 
 export type Settings = {
@@ -43,7 +43,7 @@ export type Settings = {
 
 export const DEFAULT_SETTINGS: Settings = {
   version: 2,
-  chunking: { tokens: 400, overlap: 80, minChars: 32, charsPerToken: 4 },
+  chunking: { tokens: 800, overlap: 160, minChars: 32, charsPerToken: 4 },
   embeddings: {
     modelPath: DEFAULT_EMBEDDING_MODEL,
     cacheDir: DEFAULT_EMBEDDING_CACHE_DIR,
@@ -55,9 +55,9 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   search: {
     limit: 10,
-    vectorWeight: 0.7,
-    textWeight: 0.3,
-    candidateMultiplier: 4,
+    vectorWeight: 0.9,
+    textWeight: 0.1,
+    candidateMultiplier: 2,
     maxCandidates: 200,
     snippetMaxChars: 700
   },
