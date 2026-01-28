@@ -1,0 +1,49 @@
+{
+  "name": "mem-cli",
+  "version": "0.1.0",
+  "description": "Agent memory CLI using markdown + SQLite FTS5",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-org/mem-cli.git"
+  },
+  "keywords": [
+    "cli",
+    "memory",
+    "fts5",
+    "sqlite",
+    "agents"
+  ],
+  "bin": {
+    "mem": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "npm run build",
+    "dev": "tsc -w -p tsconfig.json",
+    "test": "npm run build && node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "commander": "^12.0.0",
+    "sqlite-vec": "^0.1.6"
+  },
+  "optionalDependencies": {
+    "node-llama-cpp": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.0.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
