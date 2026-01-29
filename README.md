@@ -45,6 +45,20 @@ mem add short "User prefers concise answers." --token "my-token-123"
 mem search "preferences" --token "my-token-123"
 ```
 
+To avoid repeating `--token`, you can set `MEM_CLI_TOKEN`:
+
+```bash
+export MEM_CLI_TOKEN="my-token-123"
+mem init
+mem add short "User prefers concise answers."
+mem search "preferences"
+```
+
+Precedence:
+- `--public` always uses the public workspace (ignores `MEM_CLI_TOKEN`).
+- `--token <token>` overrides `MEM_CLI_TOKEN`.
+- Otherwise `MEM_CLI_TOKEN` (trimmed, non-empty) is used.
+
 Keep your token somewhere safe (password manager / env var). mem-cli only stores a hash and **cannot recover a lost token**.
 
 ## Semantic search (local embeddings)
@@ -154,3 +168,5 @@ cp skills/mem-cli/SKILL.md ~/.codex/skills/mem-cli/SKILL.md
 Then the agent can use `mem` for:
 - Writing memories: `mem add short|long`
 - Retrieval before answering: `mem search`
+
+Tip: for private workspaces, set `MEM_CLI_TOKEN` so the agent can run `mem init|add|search|summary|state|reindex` without repeating `--token`.

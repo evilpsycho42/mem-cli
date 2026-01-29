@@ -15,13 +15,16 @@ description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdo
 1. Initialize a workspace:
    - Public (shared): `mem init --public`
    - Private (token-protected): `mem init --token "<token>"`
+   - Private (via env): `export MEM_CLI_TOKEN="<token>" && mem init`
 
 2. Add memories:
    - Daily log entry (appends raw Markdown text): `mem add short "..." --public|--token "<token>"`
    - Long-term memory (`MEMORY.md`): `mem add long --stdin --public|--token "<token>"`
+   - With `MEM_CLI_TOKEN` set, you can omit `--token` (but still use `--public` explicitly for shared memories).
 
 3. Search (semantic):
    - `mem search "query" --public|--token "<token>"`
+   - With `MEM_CLI_TOKEN` set: `mem search "query"`
 
 ## Storage model (what gets indexed)
 
@@ -31,7 +34,7 @@ description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdo
 
 ## Debugging and troubleshooting
 
-- Check workspace stats: `mem state --public` or `mem state --token "<token>"`
+- Check workspace stats: `mem state --public` or `mem state --token "<token>"` (or `mem state` when `MEM_CLI_TOKEN` is set)
 - If embeddings fail to load (missing `node-llama-cpp` / invalid model path), `mem search` will error. Ask the user to fix their local embeddings setup.
 - If vector search is unavailable, semantic search may fall back to slower in-process cosine similarity; verify `sqlite-vec` loads on your platform and the embedding model is accessible.
 - Daemon: by default, `mem add|search` runs via a background daemon to keep embeddings loaded. Disable with `MEM_CLI_DAEMON=0`. To reset (advanced), run `mem __daemon --shutdown`.
