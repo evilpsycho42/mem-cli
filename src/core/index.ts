@@ -12,7 +12,6 @@ import { indexDbPath } from "./layout";
 
 const META_KEY = "mem_index_meta_v3";
 const VECTOR_TABLE = "chunks_vec";
-const FTS_TABLE = "chunks_fts";
 const EMBEDDING_CACHE_TABLE = "embedding_cache";
 
 type IndexMeta = {
@@ -84,7 +83,6 @@ export function openDb(workspacePath: string): Database.Database {
     );
   `);
   ensureChunksSchema(db);
-  ensureFtsSchema(db);
   ensureEmbeddingCacheSchema(db);
   return db;
 }
@@ -151,31 +149,6 @@ function ensureChunksSchema(db: Database.Database): void {
     `);
   }
   db.exec("CREATE INDEX IF NOT EXISTS idx_chunks_file_path ON chunks(file_path);");
-}
-
-function ensureFtsSchema(db: Database.Database): void {
-  try {
-    const columns = db
-      .prepare(`PRAGMA table_info(${FTS_TABLE})`)
-      .all() as Array<{ name: string }>;
-    const hasId = columns.some((entry) => entry.name === "id");
-    if (!hasId) {
-      db.exec(`DROP TABLE IF EXISTS ${FTS_TABLE}`);
-    }
-  } catch {
-    db.exec(`DROP TABLE IF EXISTS ${FTS_TABLE}`);
-  }
-  db.exec(
-    `CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS_TABLE} USING fts5(\n` +
-      `  content,\n` +
-      `  id UNINDEXED,\n` +
-      `  file_path UNINDEXED,\n` +
-      `  line_start UNINDEXED,\n` +
-      `  line_end UNINDEXED,\n` +
-      `  model UNINDEXED,\n` +
-      `  tokenize='porter'\n` +
-      `);`
-  );
 }
 
 function ensureEmbeddingCacheSchema(db: Database.Database): void {
@@ -606,9 +579,6 @@ async function indexFile(
     "INSERT INTO chunks (id, file_path, line_start, line_end, hash, model, content, embedding, updated_at) " +
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
   );
-  const insertFts = db.prepare(
-    `INSERT INTO ${FTS_TABLE} (content, id, file_path, line_start, line_end, model) VALUES (?, ?, ?, ?, ?, ?)`
-  );
   const insertVec = vectorReady
     ? db.prepare(`INSERT INTO ${VECTOR_TABLE} (id, embedding) VALUES (?, ?)`)
     : null;
@@ -620,7 +590,6 @@ async function indexFile(
         relPath
       );
     }
-    db.prepare(`DELETE FROM ${FTS_TABLE} WHERE file_path = ?`).run(relPath);
     db.prepare("DELETE FROM chunks WHERE file_path = ?").run(relPath);
 
     for (let i = 0; i < chunks.length; i += 1) {
@@ -639,7 +608,6 @@ async function indexFile(
         JSON.stringify(embedding),
         Date.now()
       );
-      insertFts.run(chunk.content, id, relPath, chunk.lineStart, chunk.lineEnd, model);
       if (insertVec && embedding.length > 0) {
         insertVec.run(id, Buffer.from(new Float32Array(embedding).buffer));
       }
@@ -780,7 +748,6 @@ async function ensureIndexUpToDateUnlocked(
 
   for (const row of rows) {
     if (!seen.has(row.path)) {
-      db.prepare(`DELETE FROM ${FTS_TABLE} WHERE file_path = ?`).run(row.path);
       if (hasTable(db, VECTOR_TABLE)) {
         if (vectorExtensionReady) {
           db.prepare(`DELETE FROM ${VECTOR_TABLE} WHERE id IN (SELECT id FROM chunks WHERE file_path = ?)`).run(
@@ -827,7 +794,6 @@ async function reindexWorkspaceUnlocked(
   }
   writeMeta(db, meta);
 
-  db.prepare(`DELETE FROM ${FTS_TABLE}`).run();
   db.prepare("DELETE FROM chunks").run();
 
   if (hasTable(db, VECTOR_TABLE)) {

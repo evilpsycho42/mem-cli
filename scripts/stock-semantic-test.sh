@@ -28,7 +28,7 @@ SETTINGS_FILE="$(node -e 'const fs=require("fs");const raw=fs.readFileSync(0,"ut
 
 cat >"$SETTINGS_FILE" <<'EOF'
 {
-  "version": 2,
+  "version": 3,
   "chunking": { "tokens": 400, "overlap": 80, "minChars": 32, "charsPerToken": 4 },
   "embeddings": {
     "modelPath": "__MODEL_PATH__",
@@ -40,10 +40,6 @@ cat >"$SETTINGS_FILE" <<'EOF'
   },
   "search": {
     "limit": 10,
-    "vectorWeight": 0.7,
-    "textWeight": 0.3,
-    "candidateMultiplier": 4,
-    "maxCandidates": 200,
     "snippetMaxChars": 700
   },
   "summary": { "days": 7, "maxChars": 8000, "full": false },

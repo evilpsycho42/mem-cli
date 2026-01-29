@@ -158,7 +158,7 @@ function parseSizes(raw) {
 
 function writeSettings({ homeDir, modelPath }) {
   const settings = {
-    version: 2,
+    version: 3,
     chunking: { tokens: 400, overlap: 80, minChars: 32, charsPerToken: 4 },
     embeddings: {
       modelPath,
@@ -171,10 +171,6 @@ function writeSettings({ homeDir, modelPath }) {
     },
     search: {
       limit: 10,
-      vectorWeight: 0.9,
-      textWeight: 0.1,
-      candidateMultiplier: 2,
-      maxCandidates: 200,
       snippetMaxChars: 700
     },
     summary: { days: 7, maxChars: 8000, full: false },
@@ -270,4 +266,3 @@ main().catch((err) => {
   process.stderr.write(`${message}\n`);
   process.exit(1);
 });
-

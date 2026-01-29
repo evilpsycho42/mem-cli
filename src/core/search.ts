@@ -1,8 +1,6 @@
 import Database from "better-sqlite3";
 import { loadSqliteVecExtension } from "./sqlite-vec";
 
-export type SearchMode = "text" | "vector" | "hybrid";
-
 export interface SearchResult {
   id: string;
   file_path: string;
@@ -10,18 +8,15 @@ export interface SearchResult {
   line_end: number;
   snippet: string;
   score: number;
-  textScore?: number;
   vectorScore?: number;
 }
 
 const VECTOR_TABLE = "chunks_vec";
-const FTS_TABLE = "chunks_fts";
 
 const vectorToBlob = (embedding: number[]): Buffer =>
   Buffer.from(new Float32Array(embedding).buffer);
 
 let cachedVectorExtensionPath: string | undefined;
-const BM25_RANK_FALLBACK = 999;
 
 async function ensureVecExtension(db: Database.Database): Promise<boolean> {
   const loaded = await loadSqliteVecExtension({
@@ -68,69 +63,6 @@ function truncateSnippet(text: string, maxChars: number): string {
   if (!text) return "";
   if (text.length <= maxChars) return text;
   return text.slice(0, maxChars);
-}
-
-function bm25RankToScore(rank: number): number {
-  const normalized = Number.isFinite(rank) ? Math.max(0, rank) : BM25_RANK_FALLBACK;
-  return 1 / (1 + normalized);
-}
-
-function buildFtsQuery(raw: string): string | null {
-  const tokens =
-    raw
-      .match(/[A-Za-z0-9_]+/g)
-      ?.map((t) => t.trim())
-      .filter(Boolean) ?? [];
-  if (tokens.length === 0) return null;
-  const quoted = tokens.map((t) => `"${t.replaceAll("\"", "")}"`);
-  return quoted.join(" AND ");
-}
-
-export function searchText(
-  db: Database.Database,
-  query: string,
-  limit: number,
-  model: string | undefined,
-  snippetMaxChars: number
-): SearchResult[] {
-  const trimmedModel = model?.trim();
-  const ftsQuery = buildFtsQuery(query);
-  if (!ftsQuery) return [];
-  const stmt = db.prepare(
-    `SELECT
-      id,
-      file_path,
-      line_start,
-      line_end,
-      content,
-      bm25(${FTS_TABLE}) as rank
-     FROM ${FTS_TABLE}
-     WHERE ${FTS_TABLE} MATCH ?${trimmedModel ? " AND model = ?" : ""}
-     ORDER BY rank ASC
-     LIMIT ?`
-  );
-  const rows = (trimmedModel
-    ? stmt.all(ftsQuery, trimmedModel, limit)
-    : stmt.all(ftsQuery, limit)) as Array<{
-    id: string;
-    file_path: string;
-    line_start: number;
-    line_end: number;
-    content: string;
-    rank: number;
-  }>;
-  return rows.map((row) => {
-    const textScore = bm25RankToScore(row.rank);
-    return {
-      id: row.id,
-      file_path: row.file_path,
-      line_start: row.line_start,
-      line_end: row.line_end,
-      snippet: truncateSnippet(row.content, snippetMaxChars),
-      score: textScore,
-      textScore
-    };
-  });
 }
 
 export async function searchVector(
@@ -212,91 +144,4 @@ export async function searchVector(
       score: entry.score,
       vectorScore: entry.score
     }));
-}
-
-export async function searchHybrid(params: {
-  db: Database.Database;
-  query: string;
-  queryVec: number[];
-  limit: number;
-  vectorWeight: number;
-  textWeight: number;
-  candidateMultiplier: number;
-  maxCandidates: number;
-  snippetMaxChars: number;
-  model?: string;
-}): Promise<SearchResult[]> {
-  const candidates = Math.min(
-    params.maxCandidates,
-    Math.max(1, Math.floor(params.limit * params.candidateMultiplier))
-  );
-  const keywordResults = searchText(params.db, params.query, candidates, params.model, params.snippetMaxChars);
-  const vectorResults = await searchVector(
-    params.db,
-    params.queryVec,
-    candidates,
-    params.model,
-    params.snippetMaxChars
-  );
-
-  const merged = new Map<
-    string,
-    {
-      id: string;
-      file_path: string;
-      line_start: number;
-      line_end: number;
-      snippet: string;
-      textScore: number;
-      vectorScore: number;
-    }
-  >();
-
-  for (const entry of vectorResults) {
-    merged.set(entry.id, {
-      id: entry.id,
-      file_path: entry.file_path,
-      line_start: entry.line_start,
-      line_end: entry.line_end,
-      snippet: entry.snippet,
-      textScore: 0,
-      vectorScore: entry.vectorScore ?? entry.score
-    });
-  }
-
-  for (const entry of keywordResults) {
-    const existing = merged.get(entry.id);
-    if (existing) {
-      existing.textScore = entry.textScore ?? 0;
-      if (entry.snippet) {
-        existing.snippet = entry.snippet;
-      }
-    } else {
-      merged.set(entry.id, {
-        id: entry.id,
-        file_path: entry.file_path,
-        line_start: entry.line_start,
-        line_end: entry.line_end,
-        snippet: entry.snippet,
-        textScore: entry.textScore ?? 0,
-        vectorScore: 0
-      });
-    }
-  }
-
-  const results = Array.from(merged.values()).map((entry) => {
-    const score = params.vectorWeight * entry.vectorScore + params.textWeight * entry.textScore;
-    return {
-      id: entry.id,
-      file_path: entry.file_path,
-      line_start: entry.line_start,
-      line_end: entry.line_end,
-      snippet: entry.snippet,
-      score,
-      textScore: entry.textScore,
-      vectorScore: entry.vectorScore
-    };
-  });
-
-  return results.sort((a, b) => b.score - a.score).slice(0, params.limit);
 }

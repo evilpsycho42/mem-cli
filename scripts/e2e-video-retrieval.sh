@@ -30,7 +30,7 @@ fi
 mkdir -p "$HOME_DIR/.mem-cli"
 cat >"$HOME_DIR/.mem-cli/settings.json" <<EOF
 {
-  "version": 2,
+  "version": 3,
   "chunking": { "tokens": 400, "overlap": 80, "minChars": 32, "charsPerToken": 4 },
   "embeddings": {
     "modelPath": "$MODEL_PATH",
@@ -42,10 +42,6 @@ cat >"$HOME_DIR/.mem-cli/settings.json" <<EOF
   },
   "search": {
     "limit": 10,
-    "vectorWeight": 0.7,
-    "textWeight": 0.3,
-    "candidateMultiplier": 4,
-    "maxCandidates": 200,
     "snippetMaxChars": 700
   },
   "summary": { "days": 7, "maxChars": 8000, "full": false },

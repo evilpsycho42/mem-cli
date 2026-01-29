@@ -1,20 +1,17 @@
 import { Command } from "commander";
 import { resolveWorkspacePath, assertWorkspaceAccess } from "../core/workspace";
 import { openDb, ensureIndexUpToDate } from "../core/index";
-import { searchHybrid } from "../core/search";
+import { searchVector } from "../core/search";
 import { buildQueryInstruction, tryGetEmbeddingProvider } from "../core/embeddings";
 import { ensureSettings, settingsFilePath } from "../core/settings";
 
 export function registerSearchCommand(program: Command): void {
   program
     .command("search <query...>")
-    .description("Search memory (hybrid)")
+    .description("Search memory (semantic)")
     .option("--public", "Use public workspace")
     .option("--token <token>", "Use private workspace token")
     .option("--limit <n>", "Limit number of results (overrides settings.json)")
-    .option("--vector-weight <n>", "Hybrid vector weight (0..1, overrides settings.json)")
-    .option("--text-weight <n>", "Hybrid text weight (0..1, overrides settings.json)")
-    .option("--candidate-multiplier <n>", "Hybrid candidate multiplier (overrides settings.json)")
     .option("--json", "JSON output")
     .action(
       async (
@@ -23,9 +20,6 @@ export function registerSearchCommand(program: Command): void {
           public?: boolean;
           token?: string;
           limit?: string;
-          vectorWeight?: string;
-          textWeight?: string;
-          candidateMultiplier?: string;
           json?: boolean;
         }
       ) => {
@@ -49,105 +43,51 @@ export function registerSearchCommand(program: Command): void {
 
         const limitCandidate = Number(options.limit);
         const limit = Number.isFinite(limitCandidate) && limitCandidate > 0 ? limitCandidate : settings.search.limit;
-
-        const vectorWeightRaw =
-          options.vectorWeight !== undefined ? Number(options.vectorWeight) : settings.search.vectorWeight;
-        const textWeightRaw =
-          options.textWeight !== undefined ? Number(options.textWeight) : settings.search.textWeight;
-
-        const baseVectorWeight = Number.isFinite(vectorWeightRaw) ? Math.max(0, vectorWeightRaw) : 0;
-        const baseTextWeight = Number.isFinite(textWeightRaw) ? Math.max(0, textWeightRaw) : 0;
-
-        const sumWeights = baseVectorWeight + baseTextWeight;
-        const vectorWeight = sumWeights > 0 ? baseVectorWeight / sumWeights : settings.search.vectorWeight;
-        const textWeight = sumWeights > 0 ? baseTextWeight / sumWeights : settings.search.textWeight;
-
-        const candidateMultiplierRaw = Number(options.candidateMultiplier);
-        const candidateMultiplier = Number.isFinite(candidateMultiplierRaw) && candidateMultiplierRaw > 0
-          ? candidateMultiplierRaw
-          : settings.search.candidateMultiplier;
-
-        const maxCandidates = settings.search.maxCandidates;
         const snippetMaxChars = settings.search.snippetMaxChars;
 
         const db = openDb(ref.path);
-
-        const providerResult = await tryGetEmbeddingProvider(settings);
-        let provider = providerResult.provider;
-        if (!provider && providerResult.error) {
-          console.error("[mem-cli] embeddings unavailable; using keyword search only.");
-          console.error(providerResult.error);
-        }
         try {
-          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
-        } catch (err) {
-          if (!provider) throw err;
-          const message = err instanceof Error ? err.message : String(err);
-          console.error("[mem-cli] embeddings failed during indexing; using keyword search only.");
-          console.error(message);
-          provider = null;
-          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: null });
-        }
-
-        let queryVec: number[] = [];
-        if (provider) {
-          try {
-            queryVec = await provider.embedQuery(
-              buildQueryInstruction(query, settings.embeddings.queryInstructionTemplate)
-            );
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error("[mem-cli] embeddings failed for query; using keyword search only.");
-            console.error(message);
-            provider = null;
-            queryVec = [];
+          const providerResult = await tryGetEmbeddingProvider(settings);
+          const provider = providerResult.provider;
+          if (!provider) {
+            throw new Error(providerResult.error || "Embeddings unavailable.");
           }
-        }
-        const results = await searchHybrid({
-          db,
-          query,
-          queryVec,
-          limit,
-          vectorWeight,
-          textWeight,
-          candidateMultiplier,
-          maxCandidates,
-          snippetMaxChars,
-          model: provider?.modelPath
-        });
-
-        db.close();
-
-        if (options.json) {
-          console.log(
-            JSON.stringify(
-              {
-                query,
-                limit,
-                vectorWeight,
-                textWeight,
-                candidateMultiplier,
-                settingsFile: settingsFilePath(),
-                results
-              },
-              null,
-              2
-            )
+          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
+          const queryVec = await provider.embedQuery(
+            buildQueryInstruction(query, settings.embeddings.queryInstructionTemplate)
           );
-          return;
-        }
+          const results = await searchVector(db, queryVec, limit, provider.modelPath, snippetMaxChars);
 
-        if (results.length === 0) {
-          console.log("No results.");
-          return;
-        }
+          if (options.json) {
+            console.log(
+              JSON.stringify(
+                {
+                  query,
+                  limit,
+                  settingsFile: settingsFilePath(),
+                  results
+                },
+                null,
+                2
+              )
+            );
+            return;
+          }
 
-        console.log(`Found ${results.length} result(s):`);
-        for (const result of results) {
-          console.log(`${result.file_path}:${result.line_start}-${result.line_end}`);
-          console.log(result.snippet);
-          console.log(`score: ${result.score.toFixed(4)}`);
-          console.log("");
+          if (results.length === 0) {
+            console.log("No results.");
+            return;
+          }
+
+          console.log(`Found ${results.length} result(s):`);
+          for (const result of results) {
+            console.log(`${result.file_path}:${result.line_start}-${result.line_end}`);
+            console.log(result.snippet);
+            console.log(`score: ${result.score.toFixed(4)}`);
+            console.log("");
+          }
+        } finally {
+          db.close();
         }
       }
     );

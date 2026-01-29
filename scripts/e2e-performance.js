@@ -509,15 +509,12 @@ async function main() {
   const modelPath = process.env.MEM_CLI_MODEL || "";
 
   const stackN = readInt("MEM_CLI_E2E_PERF_STACK_N", 25);
-  const stackCacheN = readInt("MEM_CLI_E2E_PERF_STACK_CACHE_N", Math.max(60, stackN));
+  const stackCacheN = readInt("MEM_CLI_E2E_PERF_STACK_CACHE_N", stackN);
   const movielensDocs = readInt("MEM_CLI_E2E_PERF_MOVIELENS_DOCS", 200);
   const movielensQueries = readInt("MEM_CLI_E2E_PERF_MOVIELENS_QUERIES", 30);
   const seed = readInt("MEM_CLI_E2E_PERF_SEED", 42);
 
   const limit = readInt("MEM_CLI_E2E_PERF_LIMIT", 10);
-  const vectorWeight = readFloat("MEM_CLI_E2E_PERF_VECTOR_WEIGHT", 0.9);
-  const textWeight = readFloat("MEM_CLI_E2E_PERF_TEXT_WEIGHT", 0.1);
-  const candidateMultiplier = readFloat("MEM_CLI_E2E_PERF_CANDIDATE_MULTIPLIER", 2);
 
   const chunkTokens = readInt("MEM_CLI_E2E_PERF_CHUNK_TOKENS", 400);
   const chunkOverlap = readInt("MEM_CLI_E2E_PERF_CHUNK_OVERLAP", 80);
@@ -539,7 +536,7 @@ async function main() {
       path.join(homeDir, ".mem-cli", "settings.json"),
       JSON.stringify(
         {
-          version: 2,
+          version: 3,
           chunking: {
             tokens: chunkTokens,
             overlap: chunkOverlap,
@@ -557,10 +554,6 @@ async function main() {
           },
           search: {
             limit,
-            vectorWeight,
-            textWeight,
-            candidateMultiplier,
-            maxCandidates: 200,
             snippetMaxChars: 700
           },
           summary: { days: 7, maxChars: 8000, full: false },
@@ -575,7 +568,7 @@ async function main() {
     const { ensureSettings } = require(path.join(root, "dist", "core", "settings.js"));
     const { getEmbeddingProvider, buildQueryInstruction } = require(path.join(root, "dist", "core", "embeddings.js"));
     const { openDb, reindexWorkspace } = require(path.join(root, "dist", "core", "index.js"));
-    const { searchHybrid } = require(path.join(root, "dist", "core", "search.js"));
+    const { searchVector } = require(path.join(root, "dist", "core", "search.js"));
 
     const settings = ensureSettings();
     const provider = await getEmbeddingProvider(settings);
@@ -658,18 +651,13 @@ async function main() {
         const queryVec = await provider.embedQuery(
           buildQueryInstruction(q.text, settings.embeddings.queryInstructionTemplate)
         );
-        const hits = await searchHybrid({
+        const hits = await searchVector(
           db,
-          query: q.text,
           queryVec,
-          limit: settings.search.limit,
-          vectorWeight: settings.search.vectorWeight,
-          textWeight: settings.search.textWeight,
-          candidateMultiplier: settings.search.candidateMultiplier,
-          maxCandidates: settings.search.maxCandidates,
-          snippetMaxChars: settings.search.snippetMaxChars,
-          model: provider.modelPath
-        });
+          settings.search.limit,
+          provider.modelPath,
+          settings.search.snippetMaxChars
+        );
         const qMs = Date.now() - qStarted;
         queryTimes.push(qMs);
         allQueryTimes.push(qMs);
@@ -777,9 +765,6 @@ async function main() {
         movielensDocs,
         movielensQueries,
         limit,
-        vectorWeight,
-        textWeight,
-        candidateMultiplier,
         chunking: {
           tokens: chunkTokens,
           overlap: chunkOverlap,

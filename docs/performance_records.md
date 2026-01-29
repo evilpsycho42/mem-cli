@@ -4,6 +4,8 @@ This file tracks `scripts/e2e-performance.sh` (in-process) results across versio
 
 It also includes `scripts/e2e-performance-v2.sh` (daemon end-to-end) records so we can track real `mem search` latency including CLI spawn + daemon IPC overhead.
 
+Note: mem-cli switched to semantic-only search in settings v3; older records may mention legacy hybrid params (`vectorWeight`, `textWeight`, `candidateMultiplier`).
+
 Why this exists:
 - The benchmark uses *real* datasets (Stack Exchange + MovieLens). Upstream content can change over time.
 - The runner caches downloaded datasets under `.cache/e2e-performance/`. Clearing the cache (or changing dataset code) can change results.

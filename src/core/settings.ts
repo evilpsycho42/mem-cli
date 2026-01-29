@@ -8,7 +8,7 @@ const DEFAULT_EMBEDDING_MODEL =
 const DEFAULT_EMBEDDING_CACHE_DIR = `~/${APP_DIRNAME}/model-cache`;
 
 export type Settings = {
-  version: 2;
+  version: 3;
   chunking: {
     tokens: number;
     overlap: number;
@@ -25,10 +25,6 @@ export type Settings = {
   };
   search: {
     limit: number;
-    vectorWeight: number;
-    textWeight: number;
-    candidateMultiplier: number;
-    maxCandidates: number;
     snippetMaxChars: number;
   };
   summary: {
@@ -42,7 +38,7 @@ export type Settings = {
 };
 
 export const DEFAULT_SETTINGS: Settings = {
-  version: 2,
+  version: 3,
   chunking: { tokens: 400, overlap: 80, minChars: 32, charsPerToken: 4 },
   embeddings: {
     modelPath: DEFAULT_EMBEDDING_MODEL,
@@ -55,10 +51,6 @@ export const DEFAULT_SETTINGS: Settings = {
   },
   search: {
     limit: 10,
-    vectorWeight: 0.9,
-    textWeight: 0.1,
-    candidateMultiplier: 2,
-    maxCandidates: 200,
     snippetMaxChars: 700
   },
   summary: {
@@ -150,16 +142,6 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
-function normalizeWeights(vectorWeight: number, textWeight: number): { vector: number; text: number } {
-  const v = Number.isFinite(vectorWeight) ? Math.max(0, vectorWeight) : 0;
-  const t = Number.isFinite(textWeight) ? Math.max(0, textWeight) : 0;
-  const sum = v + t;
-  if (sum <= 0) {
-    return { vector: DEFAULT_SETTINGS.search.vectorWeight, text: DEFAULT_SETTINGS.search.textWeight };
-  }
-  return { vector: v / sum, text: t / sum };
-}
-
 function normalizeSettings(raw: unknown): { settings: Settings; changed: boolean } {
   const out: Settings = JSON.parse(JSON.stringify(DEFAULT_SETTINGS)) as Settings;
   let changed = false;
@@ -171,14 +153,14 @@ function normalizeSettings(raw: unknown): { settings: Settings; changed: boolean
   assertNoUnknownKeys(raw, ["version", "chunking", "embeddings", "search", "summary", "debug"], "settings");
 
   const version = raw.version;
-  const fromVersion = version === 2 ? 2 : 1;
+  const fromVersion = version === 3 ? 3 : version === 2 ? 2 : 1;
   if (version === undefined) {
     changed = true;
-  } else if (version !== 1 && version !== 2) {
+  } else if (version !== 1 && version !== 2 && version !== 3) {
     throw new Error(`Unsupported settings.version: ${String(version)}`);
   }
-  if (fromVersion === 1) {
-    // We always write v2 going forward.
+  if (fromVersion < 3) {
+    // We always write v3 going forward.
     changed = true;
   }
 
@@ -320,14 +302,19 @@ function normalizeSettings(raw: unknown): { settings: Settings; changed: boolean
       searchRaw,
       [
         "limit",
+        "snippetMaxChars",
+        // Deprecated in settings v3 (semantic-only search); accepted for migration.
         "vectorWeight",
         "textWeight",
         "candidateMultiplier",
-        "maxCandidates",
-        "snippetMaxChars"
+        "maxCandidates"
       ],
       "settings.search"
     );
+    const deprecatedKeys = ["vectorWeight", "textWeight", "candidateMultiplier", "maxCandidates"];
+    if (deprecatedKeys.some((key) => key in searchRaw)) {
+      changed = true;
+    }
     const limit = toNumber(searchRaw.limit);
     if (searchRaw.limit === undefined) changed = true;
     if (limit !== null) {
@@ -335,33 +322,6 @@ function normalizeSettings(raw: unknown): { settings: Settings; changed: boolean
       if (out.search.limit !== limit) changed = true;
     } else if (searchRaw.limit !== undefined) {
       throw new Error("settings.search.limit must be a number");
-    }
-
-    const vw = toNumber(searchRaw.vectorWeight);
-    const tw = toNumber(searchRaw.textWeight);
-    const normalized = normalizeWeights(
-      vw ?? DEFAULT_SETTINGS.search.vectorWeight,
-      tw ?? DEFAULT_SETTINGS.search.textWeight
-    );
-    out.search.vectorWeight = normalized.vector;
-    out.search.textWeight = normalized.text;
-
-    const cm = toNumber(searchRaw.candidateMultiplier);
-    if (searchRaw.candidateMultiplier === undefined) changed = true;
-    if (cm !== null) {
-      out.search.candidateMultiplier = Math.min(50, Math.max(1, cm));
-      if (out.search.candidateMultiplier !== cm) changed = true;
-    } else if (searchRaw.candidateMultiplier !== undefined) {
-      throw new Error("settings.search.candidateMultiplier must be a number");
-    }
-
-    const maxCandidates = toNumber(searchRaw.maxCandidates);
-    if (searchRaw.maxCandidates === undefined) changed = true;
-    if (maxCandidates !== null) {
-      out.search.maxCandidates = clampInt(maxCandidates, 1, 10_000);
-      if (out.search.maxCandidates !== maxCandidates) changed = true;
-    } else if (searchRaw.maxCandidates !== undefined) {
-      throw new Error("settings.search.maxCandidates must be a number");
     }
 
     const snippetMaxChars = toNumber(searchRaw.snippetMaxChars);
@@ -428,14 +388,6 @@ function normalizeSettings(raw: unknown): { settings: Settings; changed: boolean
 
   if (!out.embeddings.modelPath || !out.embeddings.modelPath.trim()) {
     throw new Error("settings.embeddings.modelPath is required (local embeddings)");
-  }
-
-  // If weights changed due to normalization, persist them (avoids "silent" math).
-  if (
-    isObject(searchRaw) &&
-    (searchRaw.vectorWeight !== out.search.vectorWeight || searchRaw.textWeight !== out.search.textWeight)
-  ) {
-    changed = true;
   }
 
   return { settings: out, changed };

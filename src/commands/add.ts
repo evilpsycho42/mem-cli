@@ -45,22 +45,24 @@ export function registerAddCommand(program: Command): void {
         const filePath = appendDailyEntry(ref.path, text);
 
         const db = openDb(ref.path);
-        const settings = ensureSettings();
-        const { provider, error } = await tryGetEmbeddingProvider(settings);
-        if (!provider && error) {
-          console.error("[mem-cli] embeddings unavailable; indexing keywords only.");
-          console.error(error);
-        }
         try {
-          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
-        } catch (err) {
-          if (!provider) throw err;
-          const message = err instanceof Error ? err.message : String(err);
-          console.error("[mem-cli] embeddings failed during indexing; retrying keywords only.");
-          console.error(message);
-          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: null });
+          const settings = ensureSettings();
+          const { provider, error } = await tryGetEmbeddingProvider(settings);
+          if (!provider) {
+            console.error("[mem-cli] embeddings unavailable; memory was written but not indexed.");
+            if (error) console.error(error);
+          } else {
+            try {
+              await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error("[mem-cli] embeddings failed during indexing; memory was written but not indexed.");
+              console.error(message);
+            }
+          }
+        } finally {
+          db.close();
         }
-        db.close();
 
         if (options.json) {
           console.log(
@@ -98,22 +100,24 @@ export function registerAddCommand(program: Command): void {
         const filePath = appendLongMemory(ref.path, text);
 
         const db = openDb(ref.path);
-        const settings = ensureSettings();
-        const { provider, error } = await tryGetEmbeddingProvider(settings);
-        if (!provider && error) {
-          console.error("[mem-cli] embeddings unavailable; indexing keywords only.");
-          console.error(error);
-        }
         try {
-          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
-        } catch (err) {
-          if (!provider) throw err;
-          const message = err instanceof Error ? err.message : String(err);
-          console.error("[mem-cli] embeddings failed during indexing; retrying keywords only.");
-          console.error(message);
-          await ensureIndexUpToDate(db, ref.path, { embeddingProvider: null });
+          const settings = ensureSettings();
+          const { provider, error } = await tryGetEmbeddingProvider(settings);
+          if (!provider) {
+            console.error("[mem-cli] embeddings unavailable; memory was written but not indexed.");
+            if (error) console.error(error);
+          } else {
+            try {
+              await ensureIndexUpToDate(db, ref.path, { embeddingProvider: provider });
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              console.error("[mem-cli] embeddings failed during indexing; memory was written but not indexed.");
+              console.error(message);
+            }
+          }
+        } finally {
+          db.close();
         }
-        db.close();
 
         if (options.json) {
           console.log(

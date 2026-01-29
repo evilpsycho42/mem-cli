@@ -30,7 +30,7 @@ async function withTempHome(fn) {
 
 function writeSettings(homeDir, overrides = {}) {
   const base = {
-    version: 2,
+    version: 3,
     chunking: { tokens: 400, overlap: 80, minChars: 32, charsPerToken: 4 },
     embeddings: {
       modelPath: "/fake/test-model.gguf",
@@ -43,10 +43,6 @@ function writeSettings(homeDir, overrides = {}) {
     },
     search: {
       limit: 10,
-      vectorWeight: 0.7,
-      textWeight: 0.3,
-      candidateMultiplier: 4,
-      maxCandidates: 200,
       snippetMaxChars: 700
     },
     summary: { days: 7, maxChars: 8000, full: false },
@@ -175,11 +171,6 @@ function ensureIndexUpToDate(db, workspacePath, options) {
   return require("../dist/core/index.js").ensureIndexUpToDate(db, workspacePath, options);
 }
 
-function searchText(db, query, limit, model, snippetMaxChars = 700) {
-  // eslint-disable-next-line global-require
-  return require("../dist/core/search.js").searchText(db, query, limit, model, snippetMaxChars);
-}
-
 function searchVector(db, queryVec, limit, model, snippetMaxChars = 700) {
   // eslint-disable-next-line global-require
   return require("../dist/core/search.js").searchVector(db, queryVec, limit, model, snippetMaxChars);
@@ -188,11 +179,6 @@ function searchVector(db, queryVec, limit, model, snippetMaxChars = 700) {
 function buildQueryInstruction(query) {
   // eslint-disable-next-line global-require
   return require("../dist/core/embeddings.js").buildQueryInstruction(query);
-}
-
-function searchHybrid(params) {
-  // eslint-disable-next-line global-require
-  return require("../dist/core/search.js").searchHybrid(params);
 }
 
 function readJson(res) {
@@ -228,17 +214,18 @@ test("workspace migration: legacy daily/ is moved to memory/", () => {
   assert.ok(!fs.existsSync(legacyDailyDir), "expected migration to remove daily/ dir");
 });
 
-test("cli: add short/long writes raw Markdown (no injected headers) and keyword search works without embeddings", async () => {
+test("cli: add short/long writes raw Markdown (no injected headers) and semantic search returns results", async () => {
   await withTempHome(async (homeDir) => {
     writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+    const env = { MEM_CLI_EMBEDDINGS_MOCK: "1", MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8" };
 
-    const initRes = runCli({ homeDir, args: ["init", "--public", "--json"] });
+    const initRes = runCli({ homeDir, args: ["init", "--public", "--json"], env });
     assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
     const init = readJson(initRes);
     const workspacePath = init.workspace;
     assert.ok(workspacePath);
 
-    const addShortRes = runCli({ homeDir, args: ["add", "short", "hello world", "--public"] });
+    const addShortRes = runCli({ homeDir, args: ["add", "short", "hello world", "--public"], env });
     assert.equal(addShortRes.status, 0, addShortRes.stderr || addShortRes.stdout);
 
     const memoryDir = path.join(workspacePath, "memory");
@@ -250,20 +237,21 @@ test("cli: add short/long writes raw Markdown (no injected headers) and keyword 
     assert.ok(!dailyContent.includes("## "), "expected no injected timestamp headings");
     assert.ok(!dailyContent.match(/^#\s/m), "expected no injected date headings");
 
-    const addLongRes = runCli({ homeDir, args: ["add", "long", "alpha", "--public"] });
+    const addLongRes = runCli({ homeDir, args: ["add", "long", "alpha", "--public"], env });
     assert.equal(addLongRes.status, 0, addLongRes.stderr || addLongRes.stdout);
-    const addLong2Res = runCli({ homeDir, args: ["add", "long", "beta", "--public"] });
+    const addLong2Res = runCli({ homeDir, args: ["add", "long", "beta", "--public"], env });
     assert.equal(addLong2Res.status, 0, addLong2Res.stderr || addLong2Res.stdout);
 
     const longPath = path.join(workspacePath, "MEMORY.md");
     const longContent = fs.readFileSync(longPath, "utf8");
     assert.equal(longContent, "alpha\n\nbeta\n");
 
-    const searchRes = runCli({ homeDir, args: ["search", "hello", "--public", "--json"] });
+    const searchRes = runCli({ homeDir, args: ["search", "hello", "--public", "--json"], env });
     assert.equal(searchRes.status, 0, searchRes.stderr || searchRes.stdout);
     const out = readJson(searchRes);
     assert.ok(Array.isArray(out.results));
     assert.ok(out.results.length > 0, "expected at least one search hit");
+    assert.ok(out.results.every((r) => r.textScore === undefined), "expected no keyword/text scores");
     assert.ok(
       out.results.some((r) => String(r.file_path || "").startsWith("memory/")),
       "expected hit from daily memory file"
@@ -323,11 +311,18 @@ test("daemon: forwards add/search and supports --stdin", async () => {
   await withTempHome(async (homeDir) => {
     writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
 
+    const daemonEnv = {
+      MEM_CLI_DAEMON: "1",
+      MEM_CLI_DAEMON_IDLE_MS: "10000",
+      MEM_CLI_EMBEDDINGS_MOCK: "1",
+      MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8"
+    };
+
     try {
       const initRes = runCli({
         homeDir,
         args: ["init", "--public", "--json"],
-        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" }
+        env: daemonEnv
       });
       assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
       const init = readJson(initRes);
@@ -337,14 +332,14 @@ test("daemon: forwards add/search and supports --stdin", async () => {
       const addShortRes = runCli({
         homeDir,
         args: ["add", "short", "hello world", "--public"],
-        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" }
+        env: daemonEnv
       });
       assert.equal(addShortRes.status, 0, addShortRes.stderr || addShortRes.stdout);
 
       const addLongStdinRes = runCli({
         homeDir,
         args: ["add", "long", "--public", "--stdin"],
-        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" },
+        env: daemonEnv,
         input: "alpha from stdin\n"
       });
       assert.equal(addLongStdinRes.status, 0, addLongStdinRes.stderr || addLongStdinRes.stdout);
@@ -356,7 +351,7 @@ test("daemon: forwards add/search and supports --stdin", async () => {
       const searchRes = runCli({
         homeDir,
         args: ["search", "hello", "--public", "--json"],
-        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" }
+        env: daemonEnv
       });
       assert.equal(searchRes.status, 0, searchRes.stderr || searchRes.stdout);
       const out = readJson(searchRes);
@@ -372,7 +367,12 @@ test("edge: concurrent clients (daemon) + manual file edits stay consistent", as
   await withTempHome(async (homeDir) => {
     writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
 
-    const daemonEnv = { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "20000" };
+    const daemonEnv = {
+      MEM_CLI_DAEMON: "1",
+      MEM_CLI_DAEMON_IDLE_MS: "20000",
+      MEM_CLI_EMBEDDINGS_MOCK: "1",
+      MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8"
+    };
 
     try {
       const initRes = runCli({
@@ -432,6 +432,7 @@ test("edge: concurrent clients (daemon) + manual file edits stay consistent", as
       const corpusDir = path.join(workspacePath, "memory", "corpus-edge");
       fs.mkdirSync(corpusDir, { recursive: true });
       const docPath = path.join(corpusDir, "doc.md");
+      const relDoc = "memory/corpus-edge/doc.md";
 
       const oldToken = "manualeditoldtokenzz";
       const newToken = "manualeditnewtokenzzlong";
@@ -443,11 +444,14 @@ test("edge: concurrent clients (daemon) + manual file edits stay consistent", as
         env: daemonEnv
       });
       assert.equal(oldIndexedRes.status, 0, oldIndexedRes.stderr || oldIndexedRes.stdout);
-      const oldIndexedOut = readJson(oldIndexedRes);
+      let db = openDb(workspacePath);
+      let rows = db.prepare("SELECT content FROM chunks WHERE file_path = ?").all(relDoc);
+      assert.ok(rows.length > 0, "expected manual file to be indexed into chunks table");
       assert.ok(
-        oldIndexedOut.results.some((r) => r.file_path === "memory/corpus-edge/doc.md"),
-        "expected search to index and return the manually-created file"
+        rows.some((r) => String(r.content || "").includes(oldToken)),
+        "expected indexed chunk content to include old token"
       );
+      db.close();
 
       writeFile(docPath, `${newToken}\nthis line makes the file longer\n`);
 
@@ -465,25 +469,17 @@ test("edge: concurrent clients (daemon) + manual file edits stay consistent", as
       ]);
       assert.equal(newSearchA.status, 0, newSearchA.stderr || newSearchA.stdout);
       assert.equal(newSearchB.status, 0, newSearchB.stderr || newSearchB.stdout);
-      const newOutA = JSON.parse(String(newSearchA.stdout || "").trim());
-      const newOutB = JSON.parse(String(newSearchB.stdout || "").trim());
+      db = openDb(workspacePath);
+      rows = db.prepare("SELECT content FROM chunks WHERE file_path = ?").all(relDoc);
       assert.ok(
-        newOutA.results.some((r) => r.file_path === "memory/corpus-edge/doc.md"),
-        "expected updated file to be searchable (A)"
+        rows.some((r) => String(r.content || "").includes(newToken)),
+        "expected indexed chunk content to include new token"
       );
       assert.ok(
-        newOutB.results.some((r) => r.file_path === "memory/corpus-edge/doc.md"),
-        "expected updated file to be searchable (B)"
+        rows.every((r) => !String(r.content || "").includes(oldToken)),
+        "expected indexed chunk content to not include old token after edit"
       );
-
-      const oldGoneRes = runCli({
-        homeDir,
-        args: ["search", oldToken, "--public", "--json"],
-        env: daemonEnv
-      });
-      assert.equal(oldGoneRes.status, 0, oldGoneRes.stderr || oldGoneRes.stdout);
-      const oldGoneOut = readJson(oldGoneRes);
-      assert.equal(oldGoneOut.results.length, 0, "expected old token to be removed after manual edit");
+      db.close();
     } finally {
       runCli({ homeDir, args: ["__daemon", "--shutdown"] });
     }
@@ -565,6 +561,7 @@ test("edge: multi-client request storm (daemon) starts once and loads embeddings
         const corpusDir = path.join(workspacePath, "memory", "corpus-storm");
         fs.mkdirSync(corpusDir, { recursive: true });
         const docPath = path.join(corpusDir, "manual.md");
+        const relDoc = "memory/corpus-storm/manual.md";
 
         writeFile(docPath, "manual-old-zz\n");
         const oldSearch = await runCliAsync({
@@ -573,8 +570,14 @@ test("edge: multi-client request storm (daemon) starts once and loads embeddings
           env: daemonEnv
         });
         assert.equal(oldSearch.status, 0, oldSearch.stderr || oldSearch.stdout);
-        const oldOut = JSON.parse(String(oldSearch.stdout || "").trim());
-        assert.ok(oldOut.results.length > 0, "expected manual file to be indexed on search");
+        let db = openDb(workspacePath);
+        let rows = db.prepare("SELECT content FROM chunks WHERE file_path = ?").all(relDoc);
+        assert.ok(rows.length > 0, "expected manual file to be indexed into chunks table");
+        assert.ok(
+          rows.some((r) => String(r.content || "").includes("manual-old-zz")),
+          "expected indexed chunk content to include old token"
+        );
+        db.close();
 
         writeFile(docPath, "manual-new-zz\nextra\n");
         const [s1, s2] = await Promise.all([
@@ -592,19 +595,17 @@ test("edge: multi-client request storm (daemon) starts once and loads embeddings
         assert.equal(s1.status, 0, s1.stderr || s1.stdout);
         assert.equal(s2.status, 0, s2.stderr || s2.stdout);
 
-        const gone = await runCliAsync({
-          homeDir,
-          args: ["search", "manual-old-zz", "--public", "--json"],
-          env: daemonEnv
-        });
-        assert.equal(gone.status, 0, gone.stderr || gone.stdout);
-        const goneOut = JSON.parse(String(gone.stdout || "").trim());
-        const keywordHits = (goneOut.results || []).filter((r) => Number(r.textScore || 0) > 0);
-        assert.equal(keywordHits.length, 0, "expected no keyword hits for old manual token after edit");
+        db = openDb(workspacePath);
+        rows = db.prepare("SELECT content FROM chunks WHERE file_path = ?").all(relDoc);
         assert.ok(
-          (goneOut.results || []).every((r) => !String(r.snippet || "").includes("manual-old-zz")),
-          "expected no snippets containing old manual token after edit"
+          rows.some((r) => String(r.content || "").includes("manual-new-zz")),
+          "expected indexed chunk content to include new token"
         );
+        assert.ok(
+          rows.every((r) => !String(r.content || "").includes("manual-old-zz")),
+          "expected indexed chunk content to not include old token after edit"
+        );
+        db.close();
       };
 
       await Promise.all([
@@ -646,7 +647,7 @@ test("edge: multi-client request storm (daemon) starts once and loads embeddings
   });
 });
 
-test("cli: CJK query returns no results when embeddings are unavailable (no FTS tokens)", async () => {
+test("cli: CJK query errors when embeddings are unavailable", async () => {
   await withTempHome(async (homeDir) => {
     writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
 
@@ -663,10 +664,7 @@ test("cli: CJK query returns no results when embeddings are unavailable (no FTS 
       homeDir,
       args: ["search", "这个系统是如何保证视频直播低延迟和播放质量的？", "--public", "--json"]
     });
-    assert.equal(searchRes.status, 0, searchRes.stderr || searchRes.stdout);
-    const out = readJson(searchRes);
-    assert.ok(Array.isArray(out.results));
-    assert.equal(out.results.length, 0, "expected no results without embeddings for CJK-only query");
+    assert.notEqual(searchRes.status, 0, "expected search to fail without embeddings");
   });
 });
 
@@ -680,23 +678,17 @@ test("indexing only considers MEMORY.md + memory/**/*.md (not other .md files)",
     const db = openDb(workspacePath);
     await reindexWorkspace(db, workspacePath, { embeddingProvider: null });
 
-    const hits = searchText(db, "secret-phrase", 10);
-    assert.equal(hits.length, 0, "notes.md should not be indexed");
-
-    const alphaHits = searchText(db, "alpha", 10);
-    assert.ok(alphaHits.length > 0, "expected keyword hit from MEMORY.md");
-    assert.ok(alphaHits.some((h) => h.file_path === "MEMORY.md"));
+    const indexedPaths = db
+      .prepare("SELECT DISTINCT file_path as p FROM chunks ORDER BY p ASC")
+      .all()
+      .map((r) => r.p);
+    assert.ok(indexedPaths.includes("MEMORY.md"), "expected MEMORY.md to be indexed");
     assert.ok(
-      alphaHits.every((h) => h.file_path !== "memory.md"),
-      "legacy memory.md should not be indexed"
+      indexedPaths.includes("memory/2026-01-01.md"),
+      "expected memory/2026-01-01.md to be indexed"
     );
-
-    const kiwiHits = searchText(db, "kiwi", 10);
-    assert.ok(kiwiHits.length > 0, "expected keyword hit from memory/");
-    assert.ok(
-      kiwiHits.some((h) => h.file_path === "memory/2026-01-01.md"),
-      "expected match from memory/2026-01-01.md"
-    );
+    assert.ok(!indexedPaths.includes("notes.md"), "notes.md should not be indexed");
+    assert.ok(!indexedPaths.includes("memory.md"), "legacy memory.md should not be indexed");
 
     db.close();
   });
@@ -875,39 +867,13 @@ test("incremental sync: deleted memory file is removed from index", async () => 
 
     const db = openDb(workspacePath);
     await reindexWorkspace(db, workspacePath, { embeddingProvider: null });
-    assert.ok(searchText(db, "todelete", 10).length > 0);
+    const before = db.prepare("SELECT count(*) as c FROM chunks WHERE file_path = ?").get(rel);
+    assert.ok(Number(before.c) > 0, "expected deleted file to be indexed initially");
 
     fs.unlinkSync(abs);
     await ensureIndexUpToDate(db, workspacePath, { embeddingProvider: null });
-    assert.equal(searchText(db, "todelete", 10).length, 0);
-
-    db.close();
-  });
-});
-
-test("performance: keyword search remains fast on larger workspaces", async () => {
-  await withTempHome(async () => {
-    const workspacePath = mkdtemp("mem-cli-ws-");
-    writeFile(path.join(workspacePath, "MEMORY.md"), "perf\n");
-
-    for (let day = 1; day <= 60; day += 1) {
-      const name = `2026-01-${String(day).padStart(2, "0")}.md`;
-      const lines = ["# " + name.replace(".md", ""), "", "performance keyword"];
-      for (let i = 0; i < 30; i += 1) {
-        lines.push(`line ${i}: performance keyword ${i}`);
-      }
-      writeFile(path.join(workspacePath, "memory", name), lines.join("\n"));
-    }
-
-    const db = openDb(workspacePath);
-    await reindexWorkspace(db, workspacePath, { embeddingProvider: null });
-
-    const start = Date.now();
-    const hits = searchText(db, "performance", 5);
-    const elapsedMs = Date.now() - start;
-
-    assert.ok(hits.length > 0, "expected results");
-    assert.ok(elapsedMs < 5000, `expected search < 5000ms, got ${elapsedMs}ms`);
+    const after = db.prepare("SELECT count(*) as c FROM chunks WHERE file_path = ?").get(rel);
+    assert.equal(Number(after.c), 0, "expected deleted file to be removed from index");
 
     db.close();
   });
@@ -1171,18 +1137,7 @@ test("retrieval quality score: multilingual video streaming (normal + hard cases
 
     const runSearch = async (query) => {
       const queryVec = await provider.embedQuery(buildQueryInstruction(query));
-      return searchHybrid({
-        db,
-        query,
-        queryVec,
-        limit: 20,
-        vectorWeight: 0.7,
-        textWeight: 0.3,
-        candidateMultiplier: 4,
-        maxCandidates: 200,
-        snippetMaxChars: 700,
-        model: provider.modelPath
-      });
+      return searchVector(db, queryVec, 20, provider.modelPath, 700);
     };
 
     const topUniqueDocIds = (results, k) => {

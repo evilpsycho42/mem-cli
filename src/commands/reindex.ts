@@ -11,7 +11,7 @@ import { PRIVATE_DIRNAME, PUBLIC_DIRNAME } from "../core/layout";
 export function registerReindexCommand(program: Command): void {
   program
     .command("reindex")
-    .description("Ensure the search index is up to date (FTS + vector when available)")
+    .description("Ensure the semantic index is up to date (vector)")
     .option("--all", "Reindex all workspaces (public + any existing private workspaces)")
     .option("--public", "Use public workspace")
     .option("--token <token>", "Use private workspace token")
@@ -35,9 +35,8 @@ export function registerReindexCommand(program: Command): void {
 
       const settings = ensureSettings();
       const { provider, error } = await tryGetEmbeddingProvider(settings);
-      if (!provider && error) {
-        console.error("[mem-cli] embeddings unavailable; reindexing keywords only.");
-        console.error(error);
+      if (!provider) {
+        throw new Error(error || "Embeddings unavailable.");
       }
 
       const force = Boolean(options.force);
@@ -48,32 +47,15 @@ export function registerReindexCommand(program: Command): void {
       }> => {
         ensureWorkspaceLayout(workspacePath);
         const db = openDb(workspacePath);
-        let effectiveProvider = provider;
         try {
           if (!force) {
-            const needs = await indexNeedsUpdate(db, workspacePath, effectiveProvider);
+            const needs = await indexNeedsUpdate(db, workspacePath, provider);
             if (!needs) return { workspace: workspacePath, status: "up-to-date" };
-            await ensureIndexUpToDate(db, workspacePath, { embeddingProvider: effectiveProvider });
+            await ensureIndexUpToDate(db, workspacePath, { embeddingProvider: provider });
             return { workspace: workspacePath, status: "updated" };
           }
 
-          await reindexWorkspace(db, workspacePath, { embeddingProvider: effectiveProvider });
-          return { workspace: workspacePath, status: "reindexed" };
-        } catch (err) {
-          if (!effectiveProvider) throw err;
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(
-            `[mem-cli] embeddings failed during ${force ? "reindex" : "index update"}; retrying keywords only.`
-          );
-          console.error(message);
-          effectiveProvider = null;
-          if (!force) {
-            const needs = await indexNeedsUpdate(db, workspacePath, null);
-            if (!needs) return { workspace: workspacePath, status: "up-to-date" };
-            await ensureIndexUpToDate(db, workspacePath, { embeddingProvider: null });
-            return { workspace: workspacePath, status: "updated" };
-          }
-          await reindexWorkspace(db, workspacePath, { embeddingProvider: null });
+          await reindexWorkspace(db, workspacePath, { embeddingProvider: provider });
           return { workspace: workspacePath, status: "reindexed" };
         } finally {
           db.close();

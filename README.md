@@ -2,7 +2,7 @@
 
 A tiny, local “memory” tool for agents:
 - Store memories as plain Markdown files
-- Search them fast (hybrid keyword + semantic embeddings)
+- Search them fast (semantic embeddings)
 - Keep everything on disk (no server)
 
 ## Install
@@ -49,11 +49,12 @@ Keep your token somewhere safe (password manager / env var). mem-cli only stores
 
 ## Semantic search (local embeddings)
 
-`mem search` is always **hybrid** (keyword + semantic).
+`mem search` is **semantic-only** (embeddings).
 
 - Default embedding model: **Qwen3-Embedding-0.6B (GGUF)** via `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`
 - Model cache dir: `~/.mem-cli/model-cache`
-- If embeddings can’t load (e.g. `node-llama-cpp` missing), mem-cli falls back to keyword-only search.
+- If `settings.embeddings.modelPath` starts with `hf:`, the model is downloaded lazily on the first embeddings-backed command and stored in the cache dir.
+- If embeddings can’t load (e.g. `node-llama-cpp` missing), `mem search` will error.
 
 macOS note:
 - `node-llama-cpp` uses Metal by default on macOS (including integrated GPUs). If Metal causes issues, run with `export NODE_LLAMA_CPP_GPU=off`.

@@ -2,6 +2,8 @@
 
 This document compares `scripts/e2e-performance.sh` results under different **search** and **chunking** settings.
 
+Note: mem-cli now uses semantic-only search (settings v3). The hybrid search experiments below (vector/text weights + candidate multiplier) are historical and apply to older versions.
+
 Note: `e2e-performance.sh` runs in-process (no CLI spawn / daemon overhead). To measure end-to-end `mem search` latency, use `scripts/e2e-performance-v2.sh` (expect higher avgQ/p95Q due to process + IPC overhead).
 
 ## Environment

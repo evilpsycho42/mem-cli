@@ -57,7 +57,7 @@ Defaults are intentionally small so the suite is runnable locally with `node-lla
 
 - Stack Exchange: `MEM_CLI_E2E_PERF_STACK_N=25` per site
 - MovieLens: `MEM_CLI_E2E_PERF_MOVIELENS_DOCS=200`, `MEM_CLI_E2E_PERF_MOVIELENS_QUERIES=30`
-- Defaults (search + chunking): `vectorWeight=0.9`, `textWeight=0.1`, `candidateMultiplier=2`, `chunkTokens=400`, `chunkOverlap=80`
+- Defaults (search + chunking): `limit=10`, `snippetMaxChars=700`, `chunkTokens=400`, `chunkOverlap=80`
 
 All datasets are cached under `.cache/e2e-performance/` by default.
 

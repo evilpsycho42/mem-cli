@@ -64,7 +64,7 @@ export function registerStateCommand(program: Command): void {
           : "none";
 
       const db = openDb(ref.path);
-      const chunkRow = db.prepare("SELECT count(*) as count FROM chunks_fts").get() as {
+      const chunkRow = db.prepare("SELECT count(*) as count FROM chunks").get() as {
         count: number;
       };
       const chunkCount = chunkRow.count;

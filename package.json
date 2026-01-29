@@ -1,7 +1,7 @@
 {
   "name": "@kky42/mem-cli",
-  "version": "0.1.5",
-  "description": "Agent memory CLI using markdown + SQLite FTS5",
+  "version": "0.2.0",
+  "description": "Agent memory CLI using markdown + local embeddings + SQLite",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -10,8 +10,8 @@
   "keywords": [
     "cli",
     "memory",
-    "fts5",
     "sqlite",
+    "embeddings",
     "agents"
   ],
   "bin": {

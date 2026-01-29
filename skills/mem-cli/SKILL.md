@@ -20,7 +20,7 @@ description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdo
    - Daily log entry (appends raw Markdown text): `mem add short "..." --public|--token "<token>"`
    - Long-term memory (`MEMORY.md`): `mem add long --stdin --public|--token "<token>"`
 
-3. Search (always hybrid):
+3. Search (semantic):
    - `mem search "query" --public|--token "<token>"`
 
 ## Storage model (what gets indexed)
@@ -29,19 +29,10 @@ description: Use the `mem` CLI (mem-cli) to manage agent memory stored as Markdo
 - Daily logs: `memory/YYYY-MM-DD.md` (plain Markdown; no required structure).
 - Index DB: `index.db` in each workspace.
 
-## How scoring works (hybrid)
-
-Each result score is:
-- `score = vectorWeight * vectorScore + textWeight * textScore`
-
-Where:
-- `vectorScore = 1 - cosineDistance(queryEmbedding, chunkEmbedding)`
-- `textScore = 1 / (1 + bm25_rank)`
-
 ## Debugging and troubleshooting
 
 - Check workspace stats: `mem state --public` or `mem state --token "<token>"`
-- If embeddings fail to load (missing `node-llama-cpp` / invalid model path), mem-cli prints an error and falls back to keyword-only indexing/search.
-- If vector search is unavailable, hybrid may fall back to slower in-process cosine similarity; verify `sqlite-vec` loads on your platform and the embedding model is accessible.
+- If embeddings fail to load (missing `node-llama-cpp` / invalid model path), `mem search` will error. Ask the user to fix their local embeddings setup.
+- If vector search is unavailable, semantic search may fall back to slower in-process cosine similarity; verify `sqlite-vec` loads on your platform and the embedding model is accessible.
 - Daemon: by default, `mem add|search` runs via a background daemon to keep embeddings loaded. Disable with `MEM_CLI_DAEMON=0`. To reset (advanced), run `mem __daemon --shutdown`.
 - macOS: `node-llama-cpp` uses Metal by default (including integrated GPUs). If Metal causes issues, use `export NODE_LLAMA_CPP_GPU=off`.
