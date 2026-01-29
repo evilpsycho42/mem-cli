@@ -1,6 +1,8 @@
 # e2e-performance datasets
 
-`scripts/e2e-performance.sh` runs a small, repeatable retrieval benchmark intended to represent “daily agent” memory usage across common domains:
+`scripts/e2e-performance.sh` runs a small, repeatable retrieval benchmark intended to represent “daily agent” memory usage across common domains.
+
+`scripts/e2e-performance-v2.sh` runs the same benchmark end-to-end via the CLI (and the daemon), so its query latency includes process spawn + IPC overhead.
 
 - coding
 - automation tasks
@@ -58,3 +60,5 @@ Defaults are intentionally small so the suite is runnable locally with `node-lla
 - Defaults (search + chunking): `vectorWeight=0.9`, `textWeight=0.1`, `candidateMultiplier=2`, `chunkTokens=400`, `chunkOverlap=80`
 
 All datasets are cached under `.cache/e2e-performance/` by default.
+
+For v2, datasets are cached under `.cache/e2e-performance-v2/` by default.

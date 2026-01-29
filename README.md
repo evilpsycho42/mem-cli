@@ -45,16 +45,26 @@ mem add short "User prefers concise answers." --token "my-token-123"
 mem search "preferences" --token "my-token-123"
 ```
 
+Keep your token somewhere safe (password manager / env var). mem-cli only stores a hash and **cannot recover a lost token**.
+
 ## Semantic search (local embeddings)
 
 `mem search` is always **hybrid** (keyword + semantic).
 
-- Default embedding model: **Qwen3-Embedding-0.6B (GGUF)** (downloaded automatically via `hf:...`)
+- Default embedding model: **Qwen3-Embedding-0.6B (GGUF)** via `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`
 - Model cache dir: `~/.mem-cli/model-cache`
 - If embeddings can’t load (e.g. `node-llama-cpp` missing), mem-cli falls back to keyword-only search.
 
 macOS note:
 - `node-llama-cpp` uses Metal by default on macOS (including integrated GPUs). If Metal causes issues, run with `export NODE_LLAMA_CPP_GPU=off`.
+
+## Daemon (fast repeated queries)
+
+By default, `mem add|search|reindex` runs via a background daemon so the embeddings model stays loaded (no model load per CLI call).
+
+- Disable: `MEM_CLI_DAEMON=0`
+- Idle shutdown: `MEM_CLI_DAEMON_IDLE_MS=600000` (ms; default 10 min)
+- Stop now (advanced): `mem __daemon --shutdown`
 
 ## E2E performance (agent scenarios)
 
@@ -64,7 +74,22 @@ Run:
 bash scripts/e2e-performance.sh
 ```
 
+To measure end-to-end `mem search` latency (CLI + daemon overhead), run:
+
+```bash
+bash scripts/e2e-performance-v2.sh
+```
+
+To benchmark `mem reindex` time on large synthetic workspaces, run:
+
+```bash
+bash scripts/e2e-reindex-performance.sh
+```
+
 Latest recorded scores (v0.1.4, 2026-01-28, Qwen3-Embedding-0.6B-Q8_0.gguf):
+
+Test device:
+- MacBook Pro (Apple M1 Max, 32GB RAM)
 
 | Metric | Value |
 | --- | --- |
@@ -82,8 +107,16 @@ Latest recorded scores (v0.1.4, 2026-01-28, Qwen3-Embedding-0.6B-Q8_0.gguf):
 | meta.stackoverflow | community_management | 25 | 25 | 80.0% | 96.0% | 100.0% | 0.875 | 0.938 |
 | movielens | user_preference | 200 | 30 | 33.3% | 83.3% | 100.0% | 0.554 | 0.777 |
 
+Reindex benchmark (v0.1.4, 2026-01-29, synthetic docs; daemon off; mock embeddings):
+
+| Docs | Approx bytes | Indexed chunks | `mem reindex` wall time |
+| ---: | ---: | ---: | ---: |
+| 1000 | 766112 | 1000 | 1.18s |
+| 10000 | 7669077 | 10000 | 43.74s |
+
 Notes:
 - The benchmark is cached + size-limited to run locally; timings depend on hardware.
+- `e2e-performance.sh` calls `dist/core/*` directly (no CLI spawn / daemon overhead). For end-to-end latency, use `e2e-performance-v2.sh`.
 - See `docs/performance-datasets.md` and `docs/performance_records.md` for dataset definitions + history.
 
 ## Configuration
@@ -91,7 +124,22 @@ Notes:
 All configuration lives in one place:
 - `~/.mem-cli/settings.json` (shared by all workspaces)
 
-After changing settings, run `mem reindex --public` (or `--token ...`) to rebuild the index.
+Settings are read on each `mem` command (daemon included), so runtime settings take effect immediately.
+
+Some settings affect how the index is built (e.g. `chunking.*`, `embeddings.modelPath`) and require rebuilding the index **per workspace**:
+- `mem reindex --public`
+- `mem reindex --token ...` (repeat for each token workspace)
+- `mem reindex --all` (rebuilds all workspaces on disk)
+
+`mem reindex` is safe to run any time; it will no-op when the workspace index is already up to date.
+
+If you don’t run `mem reindex`, the next `mem search` / `mem add` in that workspace will auto-detect the mismatch and rebuild (the first run may be slower).
+
+`mem reindex --public` only rebuilds the public workspace; private token workspaces keep their existing index until you reindex (or use them and let auto-rebuild happen).
+
+If you don’t have a private workspace token, you can’t run `mem ... --token` for that workspace (tokens can’t be recovered; create a new token workspace and move the Markdown files if needed).
+
+Note: mem-cli records the embedding model in the index and won’t run “new model” queries against “old model” vectors — it will rebuild the workspace first.
 
 ## Use with an agent (Codex skill)
 

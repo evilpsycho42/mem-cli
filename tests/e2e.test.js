@@ -3,7 +3,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { spawnSync } = require("node:child_process");
+const net = require("node:net");
+const { spawnSync, spawn } = require("node:child_process");
 
 function mkdtemp(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -61,13 +62,101 @@ function writeSettings(homeDir, overrides = {}) {
   writeFile(path.join(homeDir, ".mem-cli", "settings.json"), JSON.stringify(base, null, 2) + "\n");
 }
 
-function runCli({ homeDir, args }) {
+function runCli({ homeDir, args, env = {}, input }) {
   const cliPath = path.join(__dirname, "..", "dist", "index.js");
   const res = spawnSync(process.execPath, [cliPath, ...args], {
-    env: { ...process.env, HOME: homeDir },
-    encoding: "utf8"
+    env: { ...process.env, HOME: homeDir, MEM_CLI_DAEMON: "0", ...env },
+    encoding: "utf8",
+    input
   });
   return res;
+}
+
+function runCliAsync({ homeDir, args, env = {}, input, timeoutMs = 30000 }) {
+  const cliPath = path.join(__dirname, "..", "dist", "index.js");
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const child = spawn(process.execPath, [cliPath, ...args], {
+      env: { ...process.env, HOME: homeDir, MEM_CLI_DAEMON: "0", ...env },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    }, timeoutMs);
+
+    child.on("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({
+        status: typeof code === "number" ? code : 1,
+        signal,
+        stdout,
+        stderr,
+        elapsedMs: Date.now() - started
+      });
+    });
+
+    if (input !== undefined) child.stdin.write(input);
+    child.stdin.end();
+  });
+}
+
+function daemonPing({ homeDir, timeoutMs = 2000 }) {
+  const { daemonAddress, DAEMON_PROTOCOL_VERSION } = require("../dist/core/daemon-transport.js");
+  const clientVersion = require("../package.json").version;
+  const { address } = daemonAddress();
+
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection(address);
+    socket.setEncoding("utf8");
+
+    const done = (err, res) => {
+      socket.removeAllListeners();
+      try {
+        socket.end();
+      } catch {}
+      if (err) reject(err);
+      else resolve(res);
+    };
+
+    socket.once("error", (err) => done(err));
+    socket.setTimeout(timeoutMs, () => done(new Error("daemon ping timeout")));
+
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const idx = buffer.indexOf("\n");
+      if (idx === -1) return;
+      const line = buffer.slice(0, idx);
+      try {
+        const parsed = JSON.parse(line);
+        done(null, parsed);
+      } catch (err) {
+        done(err);
+      }
+    });
+
+    socket.once("connect", () => {
+      const payload = {
+        type: "ping",
+        protocolVersion: DAEMON_PROTOCOL_VERSION,
+        clientVersion
+      };
+      socket.write(`${JSON.stringify(payload)}\n`);
+    });
+  });
 }
 
 function openDb(workspacePath) {
@@ -179,6 +268,381 @@ test("cli: add short/long writes raw Markdown (no injected headers) and keyword 
       out.results.some((r) => String(r.file_path || "").startsWith("memory/")),
       "expected hit from daily memory file"
     );
+  });
+});
+
+test("cli: reindex --all updates only when needed", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/mock-model.gguf", cacheDir: "" } });
+    const env = { MEM_CLI_EMBEDDINGS_MOCK: "1", MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8" };
+
+    const initPublicRes = runCli({ homeDir, args: ["init", "--public", "--json"], env });
+    assert.equal(initPublicRes.status, 0, initPublicRes.stderr || initPublicRes.stdout);
+    const publicInit = readJson(initPublicRes);
+    const publicPath = publicInit.workspace;
+    assert.ok(publicPath);
+
+    const token = "test-token-123";
+    const initPrivateRes = runCli({ homeDir, args: ["init", "--token", token, "--json"], env });
+    assert.equal(initPrivateRes.status, 0, initPrivateRes.stderr || initPrivateRes.stdout);
+    const privateInit = readJson(initPrivateRes);
+    const privatePath = privateInit.workspace;
+    assert.ok(privatePath);
+
+    const addPublic = runCli({ homeDir, args: ["add", "short", "hello-public", "--public"], env });
+    assert.equal(addPublic.status, 0, addPublic.stderr || addPublic.stdout);
+    const addPrivate = runCli({ homeDir, args: ["add", "short", "hello-private", "--token", token], env });
+    assert.equal(addPrivate.status, 0, addPrivate.stderr || addPrivate.stdout);
+
+    const reindexAllRes = runCli({ homeDir, args: ["reindex", "--all", "--json"], env });
+    assert.equal(reindexAllRes.status, 0, reindexAllRes.stderr || reindexAllRes.stdout);
+    const outA = readJson(reindexAllRes);
+    assert.ok(Array.isArray(outA.workspaces), "expected JSON workspaces list");
+    const mapA = new Map(outA.workspaces.map((w) => [w.workspace, w.status]));
+    assert.equal(mapA.get(publicPath), "up-to-date");
+    assert.equal(mapA.get(privatePath), "up-to-date");
+
+    writeSettings(homeDir, { chunking: { tokens: 300 } });
+    const reindexAllRes2 = runCli({ homeDir, args: ["reindex", "--all", "--json"], env });
+    assert.equal(reindexAllRes2.status, 0, reindexAllRes2.stderr || reindexAllRes2.stdout);
+    const outB = readJson(reindexAllRes2);
+    const mapB = new Map(outB.workspaces.map((w) => [w.workspace, w.status]));
+    assert.equal(mapB.get(publicPath), "updated");
+    assert.equal(mapB.get(privatePath), "updated");
+
+    const reindexPublicRes = runCli({ homeDir, args: ["reindex", "--public"], env });
+    assert.equal(reindexPublicRes.status, 0, reindexPublicRes.stderr || reindexPublicRes.stdout);
+    assert.ok(
+      String(reindexPublicRes.stdout || "").includes("Index already up to date."),
+      "expected reindex to report up-to-date status"
+    );
+  });
+});
+
+test("daemon: forwards add/search and supports --stdin", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+
+    try {
+      const initRes = runCli({
+        homeDir,
+        args: ["init", "--public", "--json"],
+        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" }
+      });
+      assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
+      const init = readJson(initRes);
+      const workspacePath = init.workspace;
+      assert.ok(workspacePath);
+
+      const addShortRes = runCli({
+        homeDir,
+        args: ["add", "short", "hello world", "--public"],
+        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" }
+      });
+      assert.equal(addShortRes.status, 0, addShortRes.stderr || addShortRes.stdout);
+
+      const addLongStdinRes = runCli({
+        homeDir,
+        args: ["add", "long", "--public", "--stdin"],
+        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" },
+        input: "alpha from stdin\n"
+      });
+      assert.equal(addLongStdinRes.status, 0, addLongStdinRes.stderr || addLongStdinRes.stdout);
+
+      const longPath = path.join(workspacePath, "MEMORY.md");
+      const longContent = fs.readFileSync(longPath, "utf8");
+      assert.ok(longContent.includes("alpha from stdin"));
+
+      const searchRes = runCli({
+        homeDir,
+        args: ["search", "hello", "--public", "--json"],
+        env: { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "10000" }
+      });
+      assert.equal(searchRes.status, 0, searchRes.stderr || searchRes.stdout);
+      const out = readJson(searchRes);
+      assert.ok(Array.isArray(out.results));
+      assert.ok(out.results.length > 0, "expected at least one search hit");
+    } finally {
+      runCli({ homeDir, args: ["__daemon", "--shutdown"] });
+    }
+  });
+});
+
+test("edge: concurrent clients (daemon) + manual file edits stay consistent", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+
+    const daemonEnv = { MEM_CLI_DAEMON: "1", MEM_CLI_DAEMON_IDLE_MS: "20000" };
+
+    try {
+      const initRes = runCli({
+        homeDir,
+        args: ["init", "--public", "--json"],
+        env: daemonEnv
+      });
+      assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
+      const init = readJson(initRes);
+      const workspacePath = init.workspace;
+      assert.ok(workspacePath);
+
+      // Start from a cold state: multiple clients issue forwardable commands simultaneously.
+      const entries = ["edgecasealphaa", "edgecasealphab"];
+      const addResults = await Promise.all(
+        entries.map((text) =>
+          runCliAsync({
+            homeDir,
+            args: ["add", "short", text, "--public"],
+            env: daemonEnv
+          })
+        )
+      );
+      for (const res of addResults) {
+        assert.equal(res.status, 0, res.stderr || res.stdout);
+      }
+
+      const memoryDir = path.join(workspacePath, "memory");
+      const dailyFiles = fs.readdirSync(memoryDir).filter((f) => f.endsWith(".md"));
+      assert.equal(dailyFiles.length, 1, "expected exactly one daily memory file");
+      const dailyPath = path.join(memoryDir, dailyFiles[0]);
+      const dailyContent = fs.readFileSync(dailyPath, "utf8");
+      for (const text of entries) {
+        assert.ok(dailyContent.includes(text), `expected daily log to include ${text}`);
+      }
+
+      // Mix add + search concurrently and ensure both succeed.
+      const [searchRes, addRes] = await Promise.all([
+        runCliAsync({
+          homeDir,
+          args: ["search", entries[0], "--public", "--json"],
+          env: daemonEnv
+        }),
+        runCliAsync({
+          homeDir,
+          args: ["add", "short", "edgecasegamma", "--public"],
+          env: daemonEnv
+        })
+      ]);
+      assert.equal(searchRes.status, 0, searchRes.stderr || searchRes.stdout);
+      assert.equal(addRes.status, 0, addRes.stderr || addRes.stdout);
+      const searchOut = JSON.parse(String(searchRes.stdout || "").trim());
+      assert.ok(Array.isArray(searchOut.results));
+      assert.ok(searchOut.results.length > 0, "expected at least one search hit");
+
+      // Manual memory file edits: create + index, then edit and ensure concurrent searches pick up changes.
+      const corpusDir = path.join(workspacePath, "memory", "corpus-edge");
+      fs.mkdirSync(corpusDir, { recursive: true });
+      const docPath = path.join(corpusDir, "doc.md");
+
+      const oldToken = "manualeditoldtokenzz";
+      const newToken = "manualeditnewtokenzzlong";
+      writeFile(docPath, `${oldToken}\n`);
+
+      const oldIndexedRes = runCli({
+        homeDir,
+        args: ["search", oldToken, "--public", "--json"],
+        env: daemonEnv
+      });
+      assert.equal(oldIndexedRes.status, 0, oldIndexedRes.stderr || oldIndexedRes.stdout);
+      const oldIndexedOut = readJson(oldIndexedRes);
+      assert.ok(
+        oldIndexedOut.results.some((r) => r.file_path === "memory/corpus-edge/doc.md"),
+        "expected search to index and return the manually-created file"
+      );
+
+      writeFile(docPath, `${newToken}\nthis line makes the file longer\n`);
+
+      const [newSearchA, newSearchB] = await Promise.all([
+        runCliAsync({
+          homeDir,
+          args: ["search", newToken, "--public", "--json"],
+          env: daemonEnv
+        }),
+        runCliAsync({
+          homeDir,
+          args: ["search", newToken, "--public", "--json"],
+          env: daemonEnv
+        })
+      ]);
+      assert.equal(newSearchA.status, 0, newSearchA.stderr || newSearchA.stdout);
+      assert.equal(newSearchB.status, 0, newSearchB.stderr || newSearchB.stdout);
+      const newOutA = JSON.parse(String(newSearchA.stdout || "").trim());
+      const newOutB = JSON.parse(String(newSearchB.stdout || "").trim());
+      assert.ok(
+        newOutA.results.some((r) => r.file_path === "memory/corpus-edge/doc.md"),
+        "expected updated file to be searchable (A)"
+      );
+      assert.ok(
+        newOutB.results.some((r) => r.file_path === "memory/corpus-edge/doc.md"),
+        "expected updated file to be searchable (B)"
+      );
+
+      const oldGoneRes = runCli({
+        homeDir,
+        args: ["search", oldToken, "--public", "--json"],
+        env: daemonEnv
+      });
+      assert.equal(oldGoneRes.status, 0, oldGoneRes.stderr || oldGoneRes.stdout);
+      const oldGoneOut = readJson(oldGoneRes);
+      assert.equal(oldGoneOut.results.length, 0, "expected old token to be removed after manual edit");
+    } finally {
+      runCli({ homeDir, args: ["__daemon", "--shutdown"] });
+    }
+  });
+});
+
+test("edge: multi-client request storm (daemon) starts once and loads embeddings once", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/mock-model.gguf", cacheDir: "" } });
+
+    const daemonEnv = {
+      MEM_CLI_DAEMON: "1",
+      MEM_CLI_DAEMON_IDLE_MS: "20000",
+      MEM_CLI_DAEMON_TRACE: "1",
+      MEM_CLI_EMBEDDINGS_MOCK: "1",
+      MEM_CLI_EMBEDDINGS_MOCK_LOAD_MS: "250",
+      MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8"
+    };
+
+    const traceFile = path.join(homeDir, ".mem-cli", "daemon-starts.log");
+
+    try {
+      const initRes = runCli({
+        homeDir,
+        args: ["init", "--public", "--json"],
+        env: daemonEnv
+      });
+      assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
+      const init = readJson(initRes);
+      const workspacePath = init.workspace;
+      assert.ok(workspacePath);
+
+      // Cold start storm: many concurrent forwardable commands should still yield one daemon start.
+      const concurrentAdds = Array.from({ length: 6 }, (_, i) =>
+        runCliAsync({
+          homeDir,
+          args: ["add", "short", `storm-add-${i}-zz`, "--public"],
+          env: daemonEnv
+        })
+      );
+      const addRes = await Promise.all(concurrentAdds);
+      for (const res of addRes) {
+        assert.equal(res.status, 0, res.stderr || res.stdout);
+      }
+
+      // Each "client" runs multiple commands sequentially; clients run concurrently.
+      const clientCount = 3;
+      const opsPerClient = 3;
+      const clientDurations = [];
+
+      const runClient = async (id) => {
+        let total = 0;
+        for (let op = 0; op < opsPerClient; op += 1) {
+          const token = `client-${id}-op-${op}-token-zz`;
+          const add = await runCliAsync({
+            homeDir,
+            args: ["add", "short", token, "--public"],
+            env: daemonEnv
+          });
+          total += add.elapsedMs;
+          assert.equal(add.status, 0, add.stderr || add.stdout);
+
+          const search = await runCliAsync({
+            homeDir,
+            args: ["search", token, "--public", "--json"],
+            env: daemonEnv
+          });
+          total += search.elapsedMs;
+          assert.equal(search.status, 0, search.stderr || search.stdout);
+          const out = JSON.parse(String(search.stdout || "").trim());
+          assert.ok(Array.isArray(out.results));
+          assert.ok(out.results.length > 0, "expected search to find newly-added token");
+        }
+        clientDurations.push(total);
+      };
+
+      // Manual edits happen concurrently with client operations.
+      const manualEdits = async () => {
+        const corpusDir = path.join(workspacePath, "memory", "corpus-storm");
+        fs.mkdirSync(corpusDir, { recursive: true });
+        const docPath = path.join(corpusDir, "manual.md");
+
+        writeFile(docPath, "manual-old-zz\n");
+        const oldSearch = await runCliAsync({
+          homeDir,
+          args: ["search", "manual-old-zz", "--public", "--json"],
+          env: daemonEnv
+        });
+        assert.equal(oldSearch.status, 0, oldSearch.stderr || oldSearch.stdout);
+        const oldOut = JSON.parse(String(oldSearch.stdout || "").trim());
+        assert.ok(oldOut.results.length > 0, "expected manual file to be indexed on search");
+
+        writeFile(docPath, "manual-new-zz\nextra\n");
+        const [s1, s2] = await Promise.all([
+          runCliAsync({
+            homeDir,
+            args: ["search", "manual-new-zz", "--public", "--json"],
+            env: daemonEnv
+          }),
+          runCliAsync({
+            homeDir,
+            args: ["search", "manual-new-zz", "--public", "--json"],
+            env: daemonEnv
+          })
+        ]);
+        assert.equal(s1.status, 0, s1.stderr || s1.stdout);
+        assert.equal(s2.status, 0, s2.stderr || s2.stdout);
+
+        const gone = await runCliAsync({
+          homeDir,
+          args: ["search", "manual-old-zz", "--public", "--json"],
+          env: daemonEnv
+        });
+        assert.equal(gone.status, 0, gone.stderr || gone.stdout);
+        const goneOut = JSON.parse(String(gone.stdout || "").trim());
+        const keywordHits = (goneOut.results || []).filter((r) => Number(r.textScore || 0) > 0);
+        assert.equal(keywordHits.length, 0, "expected no keyword hits for old manual token after edit");
+        assert.ok(
+          (goneOut.results || []).every((r) => !String(r.snippet || "").includes("manual-old-zz")),
+          "expected no snippets containing old manual token after edit"
+        );
+      };
+
+      await Promise.all([
+        ...Array.from({ length: clientCount }, (_, i) => runClient(i)),
+        manualEdits()
+      ]);
+
+      const stateRes = runCli({
+        homeDir,
+        args: ["state", "--public", "--json"],
+        env: daemonEnv
+      });
+      assert.equal(stateRes.status, 0, stateRes.stderr || stateRes.stdout);
+      const state = readJson(stateRes);
+      assert.ok(Number(state.markdownFiles) > 0, "expected markdown files in workspace");
+      assert.ok(Number(state.indexChunks) > 0, "expected indexed chunks in workspace");
+
+      // Confirm a single daemon processed requests and it only loaded the model once.
+      const ping = await daemonPing({ homeDir });
+      assert.ok(ping.ok, "expected daemon ping ok");
+      assert.ok(typeof ping.pid === "number" && ping.pid > 0, "expected daemon pid");
+      assert.ok(typeof ping.startedAt === "number" && ping.startedAt > 0, "expected startedAt");
+      assert.ok(ping.embeddings, "expected embeddings stats");
+      assert.equal(ping.embeddings.modelLoadCount, 1, "expected exactly one model load in daemon");
+      assert.equal(ping.embeddings.contextCreateCount, 1, "expected exactly one context creation in daemon");
+      assert.equal(ping.embeddings.providerCreateCount, 1, "expected exactly one provider creation in daemon");
+
+      // Confirm the daemon only started once even under concurrent cold-start pressure.
+      const trace = fs.existsSync(traceFile) ? fs.readFileSync(traceFile, "utf8") : "";
+      const lines = trace.split("\n").filter((l) => l.trim().length > 0);
+      assert.equal(lines.length, 1, `expected 1 daemon start, got ${lines.length} (${trace.trim()})`);
+
+      // Soft monitoring: ensure clients didn't take unbounded time.
+      const maxClientMs = Math.max(...clientDurations);
+      assert.ok(maxClientMs < 60000, `expected each client to finish < 60s, max=${maxClientMs}ms`);
+    } finally {
+      runCli({ homeDir, args: ["__daemon", "--shutdown"] });
+    }
   });
 });
 

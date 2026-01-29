@@ -1,4 +1,5 @@
 import path from "path";
+import crypto from "crypto";
 import { importNodeLlamaCpp } from "./node-llama";
 import type { Settings } from "./settings";
 import { DEFAULT_SETTINGS } from "./settings";
@@ -11,6 +12,35 @@ export type EmbeddingProvider = {
 };
 
 const cachedProviders = new Map<string, Promise<EmbeddingProvider>>();
+
+let providerCreateCount = 0;
+let llamaInitCount = 0;
+let modelLoadCount = 0;
+let contextCreateCount = 0;
+
+function truthyEnv(value: string | undefined): boolean {
+  if (!value) return false;
+  const normalized = value.trim().toLowerCase();
+  return ["1", "true", "yes", "y", "on"].includes(normalized);
+}
+
+export function getEmbeddingsDebugStats(): {
+  providerCacheSize: number;
+  providerCreateCount: number;
+  llamaInitCount: number;
+  modelLoadCount: number;
+  contextCreateCount: number;
+  mockEnabled: boolean;
+} {
+  return {
+    providerCacheSize: cachedProviders.size,
+    providerCreateCount,
+    llamaInitCount,
+    modelLoadCount,
+    contextCreateCount,
+    mockEnabled: truthyEnv(process.env.MEM_CLI_EMBEDDINGS_MOCK)
+  };
+}
 
 function isRemoteModelSpecifier(spec: string): boolean {
   return /^(hf:|https?:)/i.test(spec);
@@ -53,7 +83,54 @@ export async function getEmbeddingProvider(
   const existing = cachedProviders.get(cacheKey);
   if (existing) return existing;
 
+  providerCreateCount += 1;
   const providerPromise = (async () => {
+    if (truthyEnv(process.env.MEM_CLI_EMBEDDINGS_MOCK)) {
+      const dims = Math.max(1, Math.floor(Number(process.env.MEM_CLI_EMBEDDINGS_MOCK_DIMS) || 8));
+      const loadMs = Math.max(
+        0,
+        Math.floor(Number(process.env.MEM_CLI_EMBEDDINGS_MOCK_LOAD_MS) || 200)
+      );
+      let contextPromise: Promise<boolean> | null = null;
+
+      const ensureContext = async () => {
+        if (!contextPromise) {
+          modelLoadCount += 1;
+          contextCreateCount += 1;
+          contextPromise = (async () => {
+            if (loadMs > 0) {
+              await new Promise((r) => setTimeout(r, loadMs));
+            }
+            return true;
+          })();
+        }
+        return contextPromise;
+      };
+
+      const embedText = (text: string): number[] => {
+        const buf = crypto.createHash("sha256").update(String(text || ""), "utf8").digest();
+        const vec: number[] = [];
+        for (let i = 0; i < dims; i += 1) {
+          const v = buf[i % buf.length] ?? 0;
+          vec.push(v / 127.5 - 1);
+        }
+        const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0)) || 1;
+        return vec.map((v) => v / norm);
+      };
+
+      return {
+        modelPath,
+        embedQuery: async (text: string) => {
+          await ensureContext();
+          return embedText(text);
+        },
+        embedBatch: async (texts: string[]) => {
+          await ensureContext();
+          return texts.map((t) => embedText(t));
+        }
+      };
+    }
+
     let llamaModule: unknown;
     try {
       llamaModule = await importNodeLlamaCpp();
@@ -75,22 +152,31 @@ export async function getEmbeddingProvider(
       LlamaLogLevel: { error: number };
     };
 
-    let llama: any = null;
-    let model: any = null;
-    let ctx: any = null;
+    let llamaPromise: Promise<any> | null = null;
+    let modelPromise: Promise<any> | null = null;
+    let ctxPromise: Promise<any> | null = null;
 
     const ensureContext = async () => {
-      if (!llama) {
-        llama = await getLlama({ logLevel: LlamaLogLevel.error });
+      if (!llamaPromise) {
+        llamaInitCount += 1;
+        llamaPromise = getLlama({ logLevel: LlamaLogLevel.error });
       }
-      if (!model) {
-        const resolved = await resolveModelFile(modelPath, cacheDir || undefined);
-        model = await llama.loadModel({ modelPath: resolved });
+      const llama = await llamaPromise;
+
+      if (!modelPromise) {
+        modelLoadCount += 1;
+        modelPromise = (async () => {
+          const resolved = await resolveModelFile(modelPath, cacheDir || undefined);
+          return llama.loadModel({ modelPath: resolved });
+        })();
       }
-      if (!ctx) {
-        ctx = await model.createEmbeddingContext();
+      const model = await modelPromise;
+
+      if (!ctxPromise) {
+        contextCreateCount += 1;
+        ctxPromise = model.createEmbeddingContext();
       }
-      return ctx;
+      return ctxPromise;
     };
 
     return {

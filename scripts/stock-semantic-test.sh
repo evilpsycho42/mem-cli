@@ -14,6 +14,7 @@ WS_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/mem-cli-ws-XXXXXX")"
 TOKEN="test-token-$(date +%s)"
 
 cleanup() {
+  "${CLI[@]}" __daemon --shutdown >/dev/null 2>&1 || true
   rm -rf "$HOME_DIR" "$WS_ROOT"
 }
 trap cleanup EXIT

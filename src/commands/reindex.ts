@@ -1,52 +1,149 @@
 import { Command } from "commander";
-import { resolveWorkspacePath, assertWorkspaceAccess } from "../core/workspace";
-import { openDb, reindexWorkspace } from "../core/index";
+import fs from "fs";
+import path from "path";
+import { resolveWorkspacePath, assertWorkspaceAccess, ensureWorkspaceLayout, loadMeta } from "../core/workspace";
+import { ensureIndexUpToDate, indexNeedsUpdate, openDb, reindexWorkspace } from "../core/index";
 import { tryGetEmbeddingProvider } from "../core/embeddings";
 import { ensureSettings } from "../core/settings";
+import { getRootDir, readRegistry } from "../core/registry";
+import { PRIVATE_DIRNAME, PUBLIC_DIRNAME } from "../core/layout";
 
 export function registerReindexCommand(program: Command): void {
   program
     .command("reindex")
-    .description("Rebuild the search index (FTS + vector when available)")
+    .description("Ensure the search index is up to date (FTS + vector when available)")
+    .option("--all", "Reindex all workspaces (public + any existing private workspaces)")
     .option("--public", "Use public workspace")
     .option("--token <token>", "Use private workspace token")
+    .option("--force", "Force a full rebuild even if up to date")
     .option("--json", "JSON output")
-    .action(async (options: { public?: boolean; token?: string; json?: boolean }) => {
+    .action(async (options: { all?: boolean; public?: boolean; token?: string; force?: boolean; json?: boolean }) => {
+      const isAll = Boolean(options.all);
       const isPublic = Boolean(options.public);
       const token = options.token as string | undefined;
-      if (!isPublic && !token) {
-        throw new Error("Provide --public or --token.");
+
+      if (isAll) {
+        if (isPublic || token) {
+          throw new Error("Use either --all, or --public/--token.");
+        }
+      } else if (!isPublic && !token) {
+        throw new Error("Provide --all, --public, or --token.");
       }
       if (isPublic && token) {
         throw new Error("Choose either --public or --token, not both.");
       }
 
-      const ref = resolveWorkspacePath({ isPublic, token });
-      assertWorkspaceAccess(ref, token);
-
-      const db = openDb(ref.path);
       const settings = ensureSettings();
       const { provider, error } = await tryGetEmbeddingProvider(settings);
       if (!provider && error) {
         console.error("[mem-cli] embeddings unavailable; reindexing keywords only.");
         console.error(error);
       }
-      try {
-        await reindexWorkspace(db, ref.path, { embeddingProvider: provider });
-      } catch (err) {
-        if (!provider) throw err;
-        const message = err instanceof Error ? err.message : String(err);
-        console.error("[mem-cli] embeddings failed during reindex; retrying keywords only.");
-        console.error(message);
-        await reindexWorkspace(db, ref.path, { embeddingProvider: null });
+
+      const force = Boolean(options.force);
+
+      const runForWorkspace = async (workspacePath: string): Promise<{
+        workspace: string;
+        status: "up-to-date" | "updated" | "reindexed";
+      }> => {
+        ensureWorkspaceLayout(workspacePath);
+        const db = openDb(workspacePath);
+        let effectiveProvider = provider;
+        try {
+          if (!force) {
+            const needs = await indexNeedsUpdate(db, workspacePath, effectiveProvider);
+            if (!needs) return { workspace: workspacePath, status: "up-to-date" };
+            await ensureIndexUpToDate(db, workspacePath, { embeddingProvider: effectiveProvider });
+            return { workspace: workspacePath, status: "updated" };
+          }
+
+          await reindexWorkspace(db, workspacePath, { embeddingProvider: effectiveProvider });
+          return { workspace: workspacePath, status: "reindexed" };
+        } catch (err) {
+          if (!effectiveProvider) throw err;
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(
+            `[mem-cli] embeddings failed during ${force ? "reindex" : "index update"}; retrying keywords only.`
+          );
+          console.error(message);
+          effectiveProvider = null;
+          if (!force) {
+            const needs = await indexNeedsUpdate(db, workspacePath, null);
+            if (!needs) return { workspace: workspacePath, status: "up-to-date" };
+            await ensureIndexUpToDate(db, workspacePath, { embeddingProvider: null });
+            return { workspace: workspacePath, status: "updated" };
+          }
+          await reindexWorkspace(db, workspacePath, { embeddingProvider: null });
+          return { workspace: workspacePath, status: "reindexed" };
+        } finally {
+          db.close();
+        }
+      };
+
+      const listAllWorkspaces = (): string[] => {
+        const rootDir = getRootDir();
+        const privateDir = path.join(rootDir, PRIVATE_DIRNAME);
+        const candidates = new Set<string>();
+
+        candidates.add(path.join(rootDir, PUBLIC_DIRNAME));
+
+        if (fs.existsSync(privateDir)) {
+          try {
+            const entries = fs.readdirSync(privateDir, { withFileTypes: true });
+            for (const entry of entries) {
+              if (!entry.isDirectory()) continue;
+              candidates.add(path.join(privateDir, entry.name));
+            }
+          } catch {}
+        }
+
+        try {
+          const registry = readRegistry();
+          for (const [workspaceId, registryPath] of Object.entries(registry)) {
+            if (typeof registryPath === "string" && registryPath.trim().length > 0) {
+              candidates.add(registryPath);
+            } else if (workspaceId) {
+              candidates.add(path.join(privateDir, workspaceId));
+            }
+          }
+        } catch {}
+
+        const existing: string[] = [];
+        for (const candidate of candidates) {
+          try {
+            loadMeta(candidate);
+            existing.push(candidate);
+          } catch {}
+        }
+
+        return existing.sort();
+      };
+
+      const results: Array<{ workspace: string; status: "up-to-date" | "updated" | "reindexed" }> = [];
+
+      if (isAll) {
+        for (const workspacePath of listAllWorkspaces()) {
+          results.push(await runForWorkspace(workspacePath));
+        }
+      } else {
+        const ref = resolveWorkspacePath({ isPublic, token });
+        assertWorkspaceAccess(ref, token);
+        results.push(await runForWorkspace(ref.path));
       }
-      db.close();
 
       if (options.json) {
-        console.log(JSON.stringify({ workspace: ref.path, status: "reindexed" }, null, 2));
+        console.log(JSON.stringify(isAll ? { workspaces: results } : results[0], null, 2));
         return;
       }
 
-      console.log("Reindex complete.");
+      if (!isAll) {
+        const status = results[0]?.status ?? "updated";
+        console.log(status === "up-to-date" ? "Index already up to date." : "Index updated.");
+        return;
+      }
+
+      const updated = results.filter((r) => r.status !== "up-to-date").length;
+      const total = results.length;
+      console.log(updated === 0 ? `All ${total} workspaces already up to date.` : `Updated ${updated}/${total} workspaces.`);
     });
 }

@@ -1,6 +1,8 @@
 # Performance records
 
-This file tracks `scripts/e2e-performance.sh` results across versions.
+This file tracks `scripts/e2e-performance.sh` (in-process) results across versions.
+
+It also includes `scripts/e2e-performance-v2.sh` (daemon end-to-end) records so we can track real `mem search` latency including CLI spawn + daemon IPC overhead.
 
 Why this exists:
 - The benchmark uses *real* datasets (Stack Exchange + MovieLens). Upstream content can change over time.
@@ -8,6 +10,41 @@ Why this exists:
 - To avoid confusion, each record includes the benchmark “dataset snapshot” metadata used at the time.
 
 ---
+
+## v0.1.4 (2026-01-29) — daemon end-to-end (v2)
+
+**Command**
+
+```bash
+MEM_CLI_MODEL=/Users/kky/Dev/mem-cli/models/Qwen3-Embedding-0.6B-Q8_0.gguf bash scripts/e2e-performance-v2.sh
+```
+
+**Defaults under test**
+- Default embedding model: `hf:Qwen/Qwen3-Embedding-0.6B-GGUF/Qwen3-Embedding-0.6B-Q8_0.gguf`
+- Search: `vectorWeight=0.9`, `textWeight=0.1`, `candidateMultiplier=2`, `limit=10`
+- Chunking: `tokens=400`, `overlap=80`, `minChars=32`, `charsPerToken=4`
+- Seed: `42`
+
+**Dataset snapshot metadata**
+
+Stack Exchange caches (top-voted questions with accepted answers; docs = accepted answers; queries = question titles):
+- `stackoverflow` fetchedAt `2026-01-29T06:32:12.665Z` (cache items=30)
+- `askubuntu` fetchedAt `2026-01-29T06:32:19.627Z` (cache items=30)
+- `ux` fetchedAt `2026-01-29T06:32:23.931Z` (cache items=30)
+- `money` fetchedAt `2026-01-29T06:32:28.529Z` (cache items=30)
+- `pm` fetchedAt `2026-01-29T06:32:33.406Z` (cache items=30)
+- `meta.stackoverflow` fetchedAt `2026-01-29T06:32:38.428Z` (cache items=28)
+
+MovieLens:
+- Source: `https://files.grouplens.org/datasets/movielens/ml-latest-small.zip`
+- Cached zip SHA-256: `696d65a3dfceac7c45750ad32df2c259311949efec81f0f144fdfb91ebc9e436`
+
+**Results**
+
+Overall:
+- score: `0.917`
+- avg query: `70ms`
+- p95 query: `78ms`
 
 ## v0.1.4 (2026-01-28)
 

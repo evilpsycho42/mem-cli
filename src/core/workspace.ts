@@ -129,6 +129,13 @@ function ensureNoWorkspaceSettings(workspacePath: string): void {
   } catch {}
 }
 
+export function ensureWorkspaceLayout(workspacePath: string): void {
+  ensureMemoryLayout(workspacePath);
+  ensureLongMemoryLayout(workspacePath);
+  ensureSettings();
+  ensureNoWorkspaceSettings(workspacePath);
+}
+
 export function resolveWorkspacePath(options: { isPublic: boolean; token?: string }): WorkspaceRef {
   if (options.isPublic) {
     return { path: getPublicPath(), type: "public" };
@@ -176,10 +183,7 @@ export function assertWorkspaceAccess(ref: WorkspaceRef, token?: string): Worksp
       throw new Error("Invalid token for workspace.");
     }
   }
-  ensureMemoryLayout(ref.path);
-  ensureLongMemoryLayout(ref.path);
-  ensureSettings();
-  ensureNoWorkspaceSettings(ref.path);
+  ensureWorkspaceLayout(ref.path);
   return meta;
 }
 

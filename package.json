@@ -1,6 +1,6 @@
 {
   "name": "@kky42/mem-cli",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Agent memory CLI using markdown + SQLite FTS5",
   "license": "MIT",
   "repository": {
@@ -31,7 +31,8 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "prepublishOnly": "npm run build",
     "dev": "tsc -w -p tsconfig.json",
     "test": "npm run build && node --test tests/*.test.js"

@@ -11,6 +11,7 @@ fi
 
 HOME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mem-cli-home-XXXXXX")"
 cleanup() {
+  node "$CLI_JS" __daemon --shutdown >/dev/null 2>&1 || true
   rm -rf "$HOME_DIR"
 }
 trap cleanup EXIT

@@ -1,10 +1,10 @@
 import { Command } from "commander";
-import fs from "fs";
 import { resolveWorkspacePath, assertWorkspaceAccess } from "../core/workspace";
 import { appendDailyEntry, appendLongMemory } from "../core/storage";
 import { ensureIndexUpToDate, openDb } from "../core/index";
 import { tryGetEmbeddingProvider } from "../core/embeddings";
 import { ensureSettings } from "../core/settings";
+import { readStdinUtf8 } from "../core/stdin";
 
 function resolveAccess(options: { public?: boolean; token?: string }) {
   const isPublic = Boolean(options.public);
@@ -37,7 +37,7 @@ export function registerAddCommand(program: Command): void {
       ) => {
         const { ref, token, isPublic } = resolveAccess(options);
         const text = options.stdin
-          ? fs.readFileSync(0, "utf8")
+          ? readStdinUtf8()
           : (textParts ?? []).join(" ");
         if (!text || text.trim().length === 0) {
           throw new Error("Provide text (e.g. `mem add short ...`) or use --stdin.");
@@ -90,7 +90,7 @@ export function registerAddCommand(program: Command): void {
       ) => {
         const { ref, token, isPublic } = resolveAccess(options);
         const text = options.stdin
-          ? fs.readFileSync(0, "utf8")
+          ? readStdinUtf8()
           : (textParts ?? []).join(" ");
         if (!text || text.trim().length === 0) {
           throw new Error("Provide text (e.g. `mem add long ...`) or use --stdin.");

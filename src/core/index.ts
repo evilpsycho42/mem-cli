@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { listMemoryFiles } from "./storage";
 import { sha256Hex } from "../utils/hash";
 import type { EmbeddingProvider } from "./embeddings";
+import { acquireFileLock, waitForFileLockRelease } from "./lock";
 import { loadSqliteVecExtension } from "./sqlite-vec";
 import { ensureSettings, type Settings } from "./settings";
 import { indexDbPath } from "./layout";
@@ -35,6 +36,10 @@ type EmbeddingBatchingConfig = {
   cacheLookupBatchSize: number;
 };
 
+function indexLockPath(workspacePath: string): string {
+  return `${indexDbPath(workspacePath)}.lock`;
+}
+
 function resolveChunkingFromSettings(settings: Settings): ChunkingConfig {
   const tokens = settings.chunking.tokens;
   const overlap = settings.chunking.overlap;
@@ -64,6 +69,7 @@ function resolveEmbeddingBatchingFromSettings(settings: Settings): EmbeddingBatc
 export function openDb(workspacePath: string): Database.Database {
   const dbPath = indexDbPath(workspacePath);
   const db = new Database(dbPath);
+  db.pragma("busy_timeout = 5000");
   db.pragma("journal_mode = WAL");
   db.exec(`
     CREATE TABLE IF NOT EXISTS meta (
@@ -353,6 +359,64 @@ function chunkMarkdown(content: string, chunking: ChunkingConfig): MemoryChunk[]
   return chunkLinesByChars(lines, chunking, 1);
 }
 
+export async function indexNeedsUpdate(
+  db: Database.Database,
+  workspacePath: string,
+  provider: EmbeddingProvider | null
+): Promise<boolean> {
+  const settings = ensureSettings();
+  const meta = readMeta(db);
+  const chunking = resolveChunkingFromSettings(settings);
+
+  if (
+    meta.chunkTokens !== chunking.tokens ||
+    meta.chunkOverlap !== chunking.overlap ||
+    meta.chunkMinChars !== chunking.minChars ||
+    meta.chunkCharsPerToken !== chunking.charsPerToken
+  ) {
+    return true;
+  }
+  if (provider && (!meta.model || meta.model !== provider.modelPath)) {
+    return true;
+  }
+
+  const rows = db
+    .prepare("SELECT path, hash, mtime, size FROM files")
+    .all() as { path: string; hash: string; mtime: number; size: number }[];
+  const existing = new Map<string, { hash: string; mtime: number; size: number }>();
+  for (const row of rows) {
+    existing.set(row.path, { hash: row.hash, mtime: row.mtime, size: row.size });
+  }
+
+  const filesOnDisk = listMemoryFiles(workspacePath);
+  const seen = new Set<string>();
+
+  for (const filePath of filesOnDisk) {
+    const relPath = toPosixPath(path.relative(workspacePath, filePath));
+    seen.add(relPath);
+    const stat = fs.statSync(filePath);
+    const record = existing.get(relPath);
+    if (!record) {
+      return true;
+    }
+
+    if (record.mtime !== Math.floor(stat.mtimeMs) || record.size !== stat.size) {
+      const fileHash = await hashFile(filePath);
+      if (fileHash !== record.hash) {
+        return true;
+      }
+    }
+  }
+
+  for (const row of rows) {
+    if (!seen.has(row.path)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function buildChunkId(
   relPath: string,
   lineStart: number,
@@ -538,14 +602,6 @@ async function indexFile(
     : false;
   const model = provider?.modelPath ?? "";
 
-  if (vectorReady) {
-    db.prepare(`DELETE FROM ${VECTOR_TABLE} WHERE id IN (SELECT id FROM chunks WHERE file_path = ?)`).run(
-      relPath
-    );
-  }
-  db.prepare(`DELETE FROM ${FTS_TABLE} WHERE file_path = ?`).run(relPath);
-  db.prepare("DELETE FROM chunks WHERE file_path = ?").run(relPath);
-
   const insertChunk = db.prepare(
     "INSERT INTO chunks (id, file_path, line_start, line_end, hash, model, content, embedding, updated_at) " +
       "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -557,8 +613,16 @@ async function indexFile(
     ? db.prepare(`INSERT INTO ${VECTOR_TABLE} (id, embedding) VALUES (?, ?)`)
     : null;
 
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
+    if (vectorReady) {
+      db.prepare(`DELETE FROM ${VECTOR_TABLE} WHERE id IN (SELECT id FROM chunks WHERE file_path = ?)`).run(
+        relPath
+      );
+    }
+    db.prepare(`DELETE FROM ${FTS_TABLE} WHERE file_path = ?`).run(relPath);
+    db.prepare("DELETE FROM chunks WHERE file_path = ?").run(relPath);
+
     for (let i = 0; i < chunks.length; i += 1) {
       const chunk = chunks[i];
       const embedding = embeddings[i] ?? [];
@@ -580,20 +644,42 @@ async function indexFile(
         insertVec.run(id, Buffer.from(new Float32Array(embedding).buffer));
       }
     }
+
+    const upsertFile = db.prepare(
+      "INSERT INTO files (path, hash, mtime, size) VALUES (?, ?, ?, ?) " +
+        "ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, mtime = excluded.mtime, size = excluded.size"
+    );
+    upsertFile.run(relPath, fileHash, Math.floor(stat.mtimeMs), stat.size);
+
     db.exec("COMMIT");
   } catch (err) {
     db.exec("ROLLBACK");
     throw err;
   }
-
-  const upsertFile = db.prepare(
-    "INSERT INTO files (path, hash, mtime, size) VALUES (?, ?, ?, ?) " +
-      "ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, mtime = excluded.mtime, size = excluded.size"
-  );
-  upsertFile.run(relPath, fileHash, Math.floor(stat.mtimeMs), stat.size);
 }
 
 export async function ensureIndexUpToDate(
+  db: Database.Database,
+  workspacePath: string,
+  options?: { embeddingProvider?: EmbeddingProvider | null }
+): Promise<void> {
+  const provider = options?.embeddingProvider ?? null;
+  const lockPath = indexLockPath(workspacePath);
+  await waitForFileLockRelease(lockPath);
+  const needs = await indexNeedsUpdate(db, workspacePath, provider);
+  if (!needs) return;
+
+  const lock = await acquireFileLock(lockPath);
+  try {
+    const stillNeeds = await indexNeedsUpdate(db, workspacePath, provider);
+    if (!stillNeeds) return;
+    await ensureIndexUpToDateUnlocked(db, workspacePath, { embeddingProvider: provider });
+  } finally {
+    lock.release();
+  }
+}
+
+async function ensureIndexUpToDateUnlocked(
   db: Database.Database,
   workspacePath: string,
   options?: { embeddingProvider?: EmbeddingProvider | null }
@@ -609,11 +695,11 @@ export async function ensureIndexUpToDate(
     meta.chunkMinChars !== chunking.minChars ||
     meta.chunkCharsPerToken !== chunking.charsPerToken
   ) {
-    await reindexWorkspace(db, workspacePath, { embeddingProvider: provider });
+    await reindexWorkspaceUnlocked(db, workspacePath, { embeddingProvider: provider });
     return;
   }
   if (provider && (!meta.model || meta.model !== provider.modelPath)) {
-    await reindexWorkspace(db, workspacePath, { embeddingProvider: provider });
+    await reindexWorkspaceUnlocked(db, workspacePath, { embeddingProvider: provider });
     return;
   }
 
@@ -709,6 +795,20 @@ export async function ensureIndexUpToDate(
 }
 
 export async function reindexWorkspace(
+  db: Database.Database,
+  workspacePath: string,
+  options?: { embeddingProvider?: EmbeddingProvider | null }
+): Promise<void> {
+  const lockPath = indexLockPath(workspacePath);
+  const lock = await acquireFileLock(lockPath);
+  try {
+    await reindexWorkspaceUnlocked(db, workspacePath, options);
+  } finally {
+    lock.release();
+  }
+}
+
+async function reindexWorkspaceUnlocked(
   db: Database.Database,
   workspacePath: string,
   options?: { embeddingProvider?: EmbeddingProvider | null }

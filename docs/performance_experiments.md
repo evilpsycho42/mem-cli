@@ -2,6 +2,8 @@
 
 This document compares `scripts/e2e-performance.sh` results under different **search** and **chunking** settings.
 
+Note: `e2e-performance.sh` runs in-process (no CLI spawn / daemon overhead). To measure end-to-end `mem search` latency, use `scripts/e2e-performance-v2.sh` (expect higher avgQ/p95Q due to process + IPC overhead).
+
 ## Environment
 
 - Date: 2026-01-28
