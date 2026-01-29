@@ -4,6 +4,7 @@ import { Command } from "commander";
 import { resolveWorkspacePath, assertWorkspaceAccess } from "../core/workspace";
 import { ensureSettings } from "../core/settings";
 import { dailyDirPath, findExistingLongMemoryPath } from "../core/layout";
+import { resolveWorkspaceSelection } from "../core/token-env";
 
 function listRecentDailyFiles(workspacePath: string, days: number): string[] {
   const dailyDir = dailyDirPath(workspacePath);
@@ -52,14 +53,10 @@ export function registerSummaryCommand(program: Command): void {
       full?: boolean;
       json?: boolean;
     }) => {
-      const isPublic = Boolean(options.public);
-      const token = options.token as string | undefined;
-      if (!isPublic && !token) {
-        throw new Error("Provide --public or --token.");
-      }
-      if (isPublic && token) {
-        throw new Error("Choose either --public or --token, not both.");
-      }
+      const { isPublic, token } = resolveWorkspaceSelection({
+        public: options.public,
+        token: options.token
+      });
 
       const ref = resolveWorkspacePath({ isPublic, token });
       assertWorkspaceAccess(ref, token);

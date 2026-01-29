@@ -4,6 +4,7 @@ import { openDb, ensureIndexUpToDate } from "../core/index";
 import { searchVector } from "../core/search";
 import { buildQueryInstruction, tryGetEmbeddingProvider } from "../core/embeddings";
 import { ensureSettings, settingsFilePath } from "../core/settings";
+import { resolveWorkspaceSelection } from "../core/token-env";
 
 export function registerSearchCommand(program: Command): void {
   program
@@ -27,14 +28,10 @@ export function registerSearchCommand(program: Command): void {
         if (!query) {
           throw new Error("Provide a search query.");
         }
-        const isPublic = Boolean(options.public);
-        const token = options.token as string | undefined;
-        if (!isPublic && !token) {
-          throw new Error("Provide --public or --token.");
-        }
-        if (isPublic && token) {
-          throw new Error("Choose either --public or --token, not both.");
-        }
+        const { isPublic, token } = resolveWorkspaceSelection({
+          public: options.public,
+          token: options.token
+        });
 
         const ref = resolveWorkspacePath({ isPublic, token });
         assertWorkspaceAccess(ref, token);

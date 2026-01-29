@@ -4,6 +4,7 @@ import { spawn } from "child_process";
 import { DAEMON_PROTOCOL_VERSION, daemonEnabledByDefault, daemonAddress, daemonLockPath } from "./daemon-transport";
 import { readCliPackageVersion } from "./cli-version";
 import { acquireFileLock } from "./lock";
+import { expandArgvDefaultToken } from "./token-env";
 
 type DaemonRunResponse = {
   ok: boolean;
@@ -158,10 +159,11 @@ export async function maybeRunViaDaemon(argv: string[]): Promise<boolean> {
   if (!isForwardableCommand(argv)) return false;
 
   try {
-    let res = await runViaDaemonOnce(argv);
+    const expandedArgv = expandArgvDefaultToken(argv);
+    let res = await runViaDaemonOnce(expandedArgv);
     if (res.restartRequired) {
       await requestDaemonShutdown();
-      res = await runViaDaemonOnce(argv);
+      res = await runViaDaemonOnce(expandedArgv);
     }
 
     const stdout = typeof res.stdout === "string" ? res.stdout : "";

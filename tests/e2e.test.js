@@ -45,7 +45,7 @@ function writeSettings(homeDir, overrides = {}) {
       limit: 10,
       snippetMaxChars: 700
     },
-    summary: { days: 7, maxChars: 8000, full: false },
+    summary: { days: 2, maxChars: 8000, full: false },
     debug: { vector: false }
   };
 
@@ -214,6 +214,84 @@ test("workspace migration: legacy daily/ is moved to memory/", () => {
   assert.ok(!fs.existsSync(legacyDailyDir), "expected migration to remove daily/ dir");
 });
 
+test("cli: MEM_CLI_TOKEN provides default private workspace selection", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+    const env = { MEM_CLI_TOKEN: "default-token-123", MEM_CLI_EMBEDDINGS_MOCK: "1", MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8" };
+
+    const initRes = runCli({ homeDir, args: ["init", "--json"], env });
+    assert.equal(initRes.status, 0, initRes.stderr || initRes.stdout);
+    const init = readJson(initRes);
+    assert.equal(init.type, "private");
+    assert.ok(String(init.workspace || "").includes(`${path.sep}private${path.sep}`));
+
+    const stateRes = runCli({ homeDir, args: ["state", "--json"], env });
+    assert.equal(stateRes.status, 0, stateRes.stderr || stateRes.stdout);
+    const state = readJson(stateRes);
+    assert.equal(state.type, "private");
+    assert.equal(state.workspace, init.workspace);
+  });
+});
+
+test("cli: --token overrides MEM_CLI_TOKEN", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+    const envToken = "env-token-123";
+    const explicitToken = "explicit-token-456";
+    const env = { MEM_CLI_TOKEN: envToken, MEM_CLI_EMBEDDINGS_MOCK: "1", MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8" };
+
+    const initEnvRes = runCli({ homeDir, args: ["init", "--json"], env });
+    assert.equal(initEnvRes.status, 0, initEnvRes.stderr || initEnvRes.stdout);
+    const initEnv = readJson(initEnvRes);
+    assert.equal(initEnv.type, "private");
+
+    const initExplicitRes = runCli({ homeDir, args: ["init", "--token", explicitToken, "--json"], env });
+    assert.equal(initExplicitRes.status, 0, initExplicitRes.stderr || initExplicitRes.stdout);
+    const initExplicit = readJson(initExplicitRes);
+    assert.equal(initExplicit.type, "private");
+    assert.notEqual(initExplicit.workspace, initEnv.workspace);
+
+    const addRes = runCli({ homeDir, args: ["add", "short", "hello", "--token", explicitToken], env });
+    assert.equal(addRes.status, 0, addRes.stderr || addRes.stdout);
+    assert.ok(
+      String(addRes.stdout || "").includes(initExplicit.workspace),
+      `expected add to write under explicit workspace (stdout=${addRes.stdout})`
+    );
+    assert.ok(
+      !String(addRes.stdout || "").includes(initEnv.workspace),
+      `expected add to not write under env workspace (stdout=${addRes.stdout})`
+    );
+  });
+});
+
+test("cli: --public ignores MEM_CLI_TOKEN", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+    const env = { MEM_CLI_TOKEN: "env-token-123", MEM_CLI_EMBEDDINGS_MOCK: "1", MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8" };
+
+    const initPublicRes = runCli({ homeDir, args: ["init", "--public", "--json"], env });
+    assert.equal(initPublicRes.status, 0, initPublicRes.stderr || initPublicRes.stdout);
+    const init = readJson(initPublicRes);
+    assert.equal(init.type, "public");
+
+    const addRes = runCli({ homeDir, args: ["add", "short", "hello-public", "--public"], env });
+    assert.equal(addRes.status, 0, addRes.stderr || addRes.stdout);
+    assert.ok(
+      String(addRes.stdout || "").includes(init.workspace),
+      `expected add to write under public workspace (stdout=${addRes.stdout})`
+    );
+  });
+});
+
+test("cli: --public + --token errors (even with MEM_CLI_TOKEN)", async () => {
+  await withTempHome(async (homeDir) => {
+    const env = { MEM_CLI_TOKEN: "env-token-123" };
+    const res = runCli({ homeDir, args: ["state", "--public", "--token", "abc123"] , env });
+    assert.notEqual(res.status, 0, "expected error exit");
+    assert.ok(String(res.stderr || "").includes("Choose either --public or --token"));
+  });
+});
+
 test("cli: add short/long writes raw Markdown (no injected headers) and semantic search returns results", async () => {
   await withTempHome(async (homeDir) => {
     writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
@@ -304,6 +382,54 @@ test("cli: reindex --all updates only when needed", async () => {
       String(reindexPublicRes.stdout || "").includes("Index already up to date."),
       "expected reindex to report up-to-date status"
     );
+  });
+});
+
+test("daemon: MEM_CLI_TOKEN is expanded per request (daemon env can be stale)", async () => {
+  await withTempHome(async (homeDir) => {
+    writeSettings(homeDir, { embeddings: { modelPath: "/fake/missing-model.gguf", cacheDir: "" } });
+
+    const tokenA = "daemon-token-a-123";
+    const tokenB = "daemon-token-b-456";
+
+    const daemonEnvA = {
+      MEM_CLI_DAEMON: "1",
+      MEM_CLI_DAEMON_IDLE_MS: "20000",
+      MEM_CLI_EMBEDDINGS_MOCK: "1",
+      MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8",
+      MEM_CLI_TOKEN: tokenA
+    };
+
+    const daemonEnvB = {
+      MEM_CLI_DAEMON: "1",
+      MEM_CLI_DAEMON_IDLE_MS: "20000",
+      MEM_CLI_EMBEDDINGS_MOCK: "1",
+      MEM_CLI_EMBEDDINGS_MOCK_DIMS: "8",
+      MEM_CLI_TOKEN: tokenB
+    };
+
+    try {
+      // Init + first forwardable command starts the daemon under tokenA env.
+      const initARes = runCli({ homeDir, args: ["init", "--json"], env: daemonEnvA });
+      assert.equal(initARes.status, 0, initARes.stderr || initARes.stdout);
+      const initA = readJson(initARes);
+
+      const addARes = runCli({ homeDir, args: ["add", "short", "alpha"], env: daemonEnvA });
+      assert.equal(addARes.status, 0, addARes.stderr || addARes.stdout);
+      assert.ok(String(addARes.stdout || "").includes(initA.workspace));
+
+      // New client env switches token, but daemon is still running with tokenA env.
+      const initBRes = runCli({ homeDir, args: ["init", "--json"], env: daemonEnvB });
+      assert.equal(initBRes.status, 0, initBRes.stderr || initBRes.stdout);
+      const initB = readJson(initBRes);
+
+      const addBRes = runCli({ homeDir, args: ["add", "short", "bravo"], env: daemonEnvB });
+      assert.equal(addBRes.status, 0, addBRes.stderr || addBRes.stdout);
+      assert.ok(String(addBRes.stdout || "").includes(initB.workspace));
+      assert.ok(!String(addBRes.stdout || "").includes(initA.workspace));
+    } finally {
+      runCli({ homeDir, args: ["__daemon", "--shutdown"] });
+    }
   });
 });
 

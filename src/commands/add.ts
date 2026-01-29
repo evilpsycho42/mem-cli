@@ -5,16 +5,13 @@ import { ensureIndexUpToDate, openDb } from "../core/index";
 import { tryGetEmbeddingProvider } from "../core/embeddings";
 import { ensureSettings } from "../core/settings";
 import { readStdinUtf8 } from "../core/stdin";
+import { resolveWorkspaceSelection } from "../core/token-env";
 
 function resolveAccess(options: { public?: boolean; token?: string }) {
-  const isPublic = Boolean(options.public);
-  const token = options.token as string | undefined;
-  if (!isPublic && !token) {
-    throw new Error("Provide --public or --token.");
-  }
-  if (isPublic && token) {
-    throw new Error("Choose either --public or --token, not both.");
-  }
+  const { isPublic, token } = resolveWorkspaceSelection({
+    public: options.public,
+    token: options.token
+  });
   const ref = resolveWorkspacePath({ isPublic, token });
   assertWorkspaceAccess(ref, token);
   return { ref, token, isPublic };

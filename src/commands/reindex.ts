@@ -7,6 +7,7 @@ import { tryGetEmbeddingProvider } from "../core/embeddings";
 import { ensureSettings } from "../core/settings";
 import { getRootDir, readRegistry } from "../core/registry";
 import { PRIVATE_DIRNAME, PUBLIC_DIRNAME } from "../core/layout";
+import { MEM_CLI_TOKEN_ENV, readMemCliTokenEnv, resolveWorkspaceSelection } from "../core/token-env";
 
 export function registerReindexCommand(program: Command): void {
   program
@@ -19,18 +20,17 @@ export function registerReindexCommand(program: Command): void {
     .option("--json", "JSON output")
     .action(async (options: { all?: boolean; public?: boolean; token?: string; force?: boolean; json?: boolean }) => {
       const isAll = Boolean(options.all);
-      const isPublic = Boolean(options.public);
-      const token = options.token as string | undefined;
+      const hasPublic = Boolean(options.public);
+      const explicitToken = options.token as string | undefined;
 
       if (isAll) {
-        if (isPublic || token) {
+        if (hasPublic || explicitToken) {
           throw new Error("Use either --all, or --public/--token.");
         }
-      } else if (!isPublic && !token) {
-        throw new Error("Provide --all, --public, or --token.");
-      }
-      if (isPublic && token) {
-        throw new Error("Choose either --public or --token, not both.");
+      } else {
+        if (!hasPublic && !explicitToken && !readMemCliTokenEnv()) {
+          throw new Error(`Provide --all, --public, or --token (or set ${MEM_CLI_TOKEN_ENV}).`);
+        }
       }
 
       const settings = ensureSettings();
@@ -108,6 +108,10 @@ export function registerReindexCommand(program: Command): void {
           results.push(await runForWorkspace(workspacePath));
         }
       } else {
+        const { isPublic, token } = resolveWorkspaceSelection({
+          public: options.public,
+          token: options.token
+        });
         const ref = resolveWorkspacePath({ isPublic, token });
         assertWorkspaceAccess(ref, token);
         results.push(await runForWorkspace(ref.path));

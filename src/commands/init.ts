@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { initPublicWorkspace, initPrivateWorkspace } from "../core/workspace";
 import { openDb } from "../core/index";
 import { settingsFilePath } from "../core/settings";
+import { MEM_CLI_TOKEN_ENV, readMemCliTokenEnv } from "../core/token-env";
 
 export function registerInitCommand(program: Command): void {
   program
@@ -13,17 +14,19 @@ export function registerInitCommand(program: Command): void {
     .option("--json", "JSON output")
     .action((options: { public?: boolean; token?: string; path?: string; json?: boolean }) => {
       const isPublic = Boolean(options.public);
-      const token = options.token as string | undefined;
+      const explicitToken = options.token as string | undefined;
       const customPath = options.path as string | undefined;
 
-      if (!isPublic && !token) {
-        throw new Error("Provide --public or --token.");
-      }
-      if (isPublic && token) {
+      if (isPublic && explicitToken) {
         throw new Error("Choose either --public or --token, not both.");
       }
       if (isPublic && customPath) {
-        throw new Error("--path is only valid with --token.");
+        throw new Error(`--path is only valid with private workspaces (--token or ${MEM_CLI_TOKEN_ENV}).`);
+      }
+
+      const token = isPublic ? undefined : explicitToken ?? readMemCliTokenEnv();
+      if (!isPublic && !token) {
+        throw new Error(`Provide --public or --token (or set ${MEM_CLI_TOKEN_ENV}).`);
       }
 
       const workspacePath = isPublic

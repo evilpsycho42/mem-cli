@@ -6,6 +6,7 @@ import { fileSize, listMemoryFiles } from "../core/storage";
 import { openDb, getIndexMeta } from "../core/index";
 import { ensureSettings, settingsFilePath } from "../core/settings";
 import { dailyDirPath, findExistingLongMemoryPath } from "../core/layout";
+import { resolveWorkspaceSelection } from "../core/token-env";
 
 function listDailyFiles(workspacePath: string): string[] {
   const dailyDir = dailyDirPath(workspacePath);
@@ -40,14 +41,10 @@ export function registerStateCommand(program: Command): void {
     .option("--token <token>", "Use private workspace token")
     .option("--json", "JSON output")
     .action((options: { public?: boolean; token?: string; json?: boolean }) => {
-      const isPublic = Boolean(options.public);
-      const token = options.token as string | undefined;
-      if (!isPublic && !token) {
-        throw new Error("Provide --public or --token.");
-      }
-      if (isPublic && token) {
-        throw new Error("Choose either --public or --token, not both.");
-      }
+      const { isPublic, token } = resolveWorkspaceSelection({
+        public: options.public,
+        token: options.token
+      });
 
       const ref = resolveWorkspacePath({ isPublic, token });
       const workspaceMeta = assertWorkspaceAccess(ref, token);
