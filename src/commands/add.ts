@@ -32,7 +32,7 @@ export function registerAddCommand(program: Command): void {
         textParts: string[] | undefined,
         options: { public?: boolean; token?: string; stdin?: boolean; json?: boolean }
       ) => {
-        const { ref, token, isPublic } = resolveAccess(options);
+        const { ref, isPublic } = resolveAccess(options);
         const text = options.stdin
           ? readStdinUtf8()
           : (textParts ?? []).join(" ");
@@ -87,7 +87,7 @@ export function registerAddCommand(program: Command): void {
         textParts: string[] | undefined,
         options: { public?: boolean; token?: string; stdin?: boolean; json?: boolean }
       ) => {
-        const { ref, token, isPublic } = resolveAccess(options);
+        const { ref, isPublic } = resolveAccess(options);
         const text = options.stdin
           ? readStdinUtf8()
           : (textParts ?? []).join(" ");

@@ -29,6 +29,11 @@ export interface WorkspaceRef {
   tokenHash?: string;
 }
 
+function formatErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
 export function getPublicPath(): string {
   return path.join(getRootDir(), PUBLIC_DIRNAME);
 }
@@ -49,18 +54,46 @@ function ensureMemoryLayout(workspacePath: string): void {
   if (!fs.existsSync(memoryDir) && fs.existsSync(legacyDailyDir)) {
     try {
       fs.renameSync(legacyDailyDir, memoryDir);
-    } catch {
+    } catch (err) {
+      console.error(
+        `[mem-cli] Failed to migrate legacy daily dir; falling back to file-by-file migration: ${formatErrorMessage(err)}`
+      );
       ensureDir(memoryDir);
-      for (const name of fs.readdirSync(legacyDailyDir)) {
-        const from = path.join(legacyDailyDir, name);
-        const to = path.join(memoryDir, name);
-        try {
-          fs.renameSync(from, to);
-        } catch {}
+      let failedMoves = 0;
+      try {
+        for (const name of fs.readdirSync(legacyDailyDir)) {
+          const from = path.join(legacyDailyDir, name);
+          const to = path.join(memoryDir, name);
+          try {
+            fs.renameSync(from, to);
+            continue;
+          } catch {}
+          try {
+            fs.copyFileSync(from, to);
+            fs.unlinkSync(from);
+          } catch (fileErr) {
+            failedMoves += 1;
+            console.error(`[mem-cli] Failed to migrate legacy daily file ${from}: ${formatErrorMessage(fileErr)}`);
+          }
+        }
+      } catch (readErr) {
+        console.error(`[mem-cli] Failed to read legacy daily dir ${legacyDailyDir}: ${formatErrorMessage(readErr)}`);
+      }
+      if (failedMoves > 0) {
+        console.error(
+          `[mem-cli] Failed to migrate ${failedMoves} file(s) from ${legacyDailyDir}; leaving remaining files in place.`
+        );
       }
       try {
         fs.rmdirSync(legacyDailyDir);
-      } catch {}
+      } catch (rmdirErr) {
+        // It's ok if the directory isn't empty due to failed moves.
+        if (failedMoves === 0) {
+          console.error(
+            `[mem-cli] Failed to remove legacy daily dir ${legacyDailyDir}: ${formatErrorMessage(rmdirErr)}`
+          );
+        }
+      }
     }
   }
   ensureDir(memoryDir);
@@ -116,7 +149,11 @@ function ensureLongMemoryLayout(workspacePath: string): void {
       try {
         fs.copyFileSync(legacy, primary);
         fs.unlinkSync(legacy);
-      } catch {}
+      } catch (err) {
+        console.error(
+          `[mem-cli] Failed to migrate legacy ${LEGACY_LONG_MEMORY_FILENAME} to ${LONG_MEMORY_FILENAME_PRIMARY}: ${formatErrorMessage(err)}`
+        );
+      }
     }
   }
 }

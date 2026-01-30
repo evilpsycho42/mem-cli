@@ -24,8 +24,17 @@ type IndexMeta = {
   chunkCharsPerToken?: number;
 };
 
-let cachedVectorExtensionPath: string | undefined;
-let didPruneOrphanedVectors = false;
+type VecState = { cachedVectorExtensionPath?: string; didPruneOrphanedVectors: boolean };
+
+const vecStateByDb = new WeakMap<Database.Database, VecState>();
+
+function getVecState(db: Database.Database): VecState {
+  const existing = vecStateByDb.get(db);
+  if (existing) return existing;
+  const created: VecState = { didPruneOrphanedVectors: false };
+  vecStateByDb.set(db, created);
+  return created;
+}
 
 type ChunkingConfig = { tokens: number; overlap: number; minChars: number; charsPerToken: number };
 
@@ -188,14 +197,21 @@ async function ensureVectorReady(
 ): Promise<boolean> {
   if (dims <= 0) return false;
 
+  const vecState = getVecState(db);
   const meta = readMeta(db);
   const previousModel = meta.model;
   const previousDims = meta.dims;
 
-  const loaded = await loadSqliteVecExtension({
+  const extensionPathHint = vecState.cachedVectorExtensionPath ?? meta.vectorExtensionPath;
+  let loaded = await loadSqliteVecExtension({
     db,
-    extensionPath: cachedVectorExtensionPath ?? meta.vectorExtensionPath
+    extensionPath: extensionPathHint
   });
+  if (!loaded.ok && extensionPathHint) {
+    // A cached extension path can go stale across versions or installs.
+    vecState.cachedVectorExtensionPath = undefined;
+    loaded = await loadSqliteVecExtension({ db });
+  }
   if (debug) {
     console.error("[mem-cli] sqlite-vec load", loaded);
   }
@@ -205,7 +221,7 @@ async function ensureVectorReady(
     writeMeta(db, meta);
     return false;
   }
-  cachedVectorExtensionPath = loaded.extensionPath;
+  vecState.cachedVectorExtensionPath = loaded.extensionPath;
   try {
     const row = db.prepare("SELECT vec_version() as v").get() as { v?: string } | undefined;
     if (debug) {
@@ -233,7 +249,7 @@ async function ensureVectorReady(
       `)`
   );
 
-  meta.vectorExtensionPath = cachedVectorExtensionPath;
+  meta.vectorExtensionPath = vecState.cachedVectorExtensionPath;
   writeMeta(db, meta);
   return true;
 }
@@ -594,6 +610,9 @@ async function indexFile(
 
     for (let i = 0; i < chunks.length; i += 1) {
       const chunk = chunks[i];
+      if (!chunk) {
+        throw new Error(`Internal error: missing chunk at index ${i} for ${relPath}`);
+      }
       const embedding = embeddings[i] ?? [];
       const id = buildChunkId(relPath, chunk.lineStart, chunk.lineEnd, chunk.hash, i);
       const chunkHash = chunk.hash;
@@ -673,12 +692,22 @@ async function ensureIndexUpToDateUnlocked(
 
   let vectorExtensionReady = false;
   if (provider && hasTable(db, VECTOR_TABLE)) {
-    const loaded = await loadSqliteVecExtension({
+    const vecState = getVecState(db);
+    const extensionPathHint = vecState.cachedVectorExtensionPath ?? meta.vectorExtensionPath;
+    let loaded = await loadSqliteVecExtension({
       db,
-      extensionPath: cachedVectorExtensionPath
+      extensionPath: extensionPathHint
     });
+    if (!loaded.ok && extensionPathHint) {
+      vecState.cachedVectorExtensionPath = undefined;
+      loaded = await loadSqliteVecExtension({ db });
+    }
     if (loaded.ok) {
-      cachedVectorExtensionPath = loaded.extensionPath;
+      vecState.cachedVectorExtensionPath = loaded.extensionPath;
+      if (loaded.extensionPath && meta.vectorExtensionPath !== loaded.extensionPath) {
+        meta.vectorExtensionPath = loaded.extensionPath;
+        writeMeta(db, meta);
+      }
       try {
         db.prepare("SELECT vec_version()").get();
         vectorExtensionReady = true;
@@ -688,11 +717,12 @@ async function ensureIndexUpToDateUnlocked(
     }
   }
 
-  if (vectorExtensionReady && !didPruneOrphanedVectors) {
+  const vecState = getVecState(db);
+  if (vectorExtensionReady && !vecState.didPruneOrphanedVectors) {
     try {
       db.exec(`DELETE FROM ${VECTOR_TABLE} WHERE id NOT IN (SELECT id FROM chunks)`);
     } catch {}
-    didPruneOrphanedVectors = true;
+    vecState.didPruneOrphanedVectors = true;
   }
 
   const rows = db
@@ -797,12 +827,18 @@ async function reindexWorkspaceUnlocked(
   db.prepare("DELETE FROM chunks").run();
 
   if (hasTable(db, VECTOR_TABLE)) {
-    const loaded = await loadSqliteVecExtension({
+    const vecState = getVecState(db);
+    const extensionPathHint = vecState.cachedVectorExtensionPath ?? meta.vectorExtensionPath;
+    let loaded = await loadSqliteVecExtension({
       db,
-      extensionPath: cachedVectorExtensionPath ?? meta.vectorExtensionPath
+      extensionPath: extensionPathHint
     });
+    if (!loaded.ok && extensionPathHint) {
+      vecState.cachedVectorExtensionPath = undefined;
+      loaded = await loadSqliteVecExtension({ db });
+    }
     if (loaded.ok) {
-      cachedVectorExtensionPath = loaded.extensionPath;
+      vecState.cachedVectorExtensionPath = loaded.extensionPath;
       try {
         db.prepare("SELECT vec_version()").get();
       } catch {}

@@ -16,19 +16,25 @@ const VECTOR_TABLE = "chunks_vec";
 const vectorToBlob = (embedding: number[]): Buffer =>
   Buffer.from(new Float32Array(embedding).buffer);
 
-let cachedVectorExtensionPath: string | undefined;
+const cachedVectorExtensionPathByDb = new WeakMap<Database.Database, string | undefined>();
 
 async function ensureVecExtension(db: Database.Database): Promise<boolean> {
-  const loaded = await loadSqliteVecExtension({
+  const extensionPathHint = cachedVectorExtensionPathByDb.get(db);
+  let loaded = await loadSqliteVecExtension({
     db,
-    extensionPath: cachedVectorExtensionPath
+    extensionPath: extensionPathHint
   });
+  if (!loaded.ok && extensionPathHint) {
+    cachedVectorExtensionPathByDb.delete(db);
+    loaded = await loadSqliteVecExtension({ db });
+  }
   if (!loaded.ok) return false;
-  cachedVectorExtensionPath = loaded.extensionPath;
   try {
     db.prepare("SELECT vec_version()").get();
+    cachedVectorExtensionPathByDb.set(db, loaded.extensionPath);
     return true;
   } catch {
+    cachedVectorExtensionPathByDb.delete(db);
     return false;
   }
 }
@@ -42,13 +48,12 @@ function parseEmbedding(raw: string): number[] {
   }
 }
 
-function cosineSimilarity(a: number[], b: number[]): number {
+function cosineSimilaritySameLength(a: number[], b: number[]): number {
   if (a.length === 0 || b.length === 0) return 0;
-  const len = Math.min(a.length, b.length);
   let dot = 0;
   let normA = 0;
   let normB = 0;
-  for (let i = 0; i < len; i += 1) {
+  for (let i = 0; i < a.length; i += 1) {
     const av = a[i] ?? 0;
     const bv = b[i] ?? 0;
     dot += av * bv;
@@ -127,11 +132,21 @@ export async function searchVector(
     embedding: string;
   }>;
 
+  let warnedDimMismatch = false;
   return rows
-    .map((row) => ({
-      row,
-      score: cosineSimilarity(queryVec, parseEmbedding(row.embedding))
-    }))
+    .map((row) => {
+      const embedding = parseEmbedding(row.embedding);
+      if (embedding.length !== queryVec.length) {
+        if (!warnedDimMismatch) {
+          console.error(
+            `[mem-cli] Embedding dimension mismatch (query=${queryVec.length}, row=${embedding.length}); treating mismatched rows as score=0. Consider reindexing.`
+          );
+          warnedDimMismatch = true;
+        }
+        return { row, score: 0 };
+      }
+      return { row, score: cosineSimilaritySameLength(queryVec, embedding) };
+    })
     .filter((entry) => Number.isFinite(entry.score))
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
